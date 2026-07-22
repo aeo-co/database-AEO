@@ -147,7 +147,7 @@ async def upload_files(files: list[UploadFile] = File(...), passphrase: str = Fo
 
 
 # Static frontend - must be mounted last so /api/* routes above take priority.
-app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
+app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="static")
 
 
 if __name__ == "__main__":
