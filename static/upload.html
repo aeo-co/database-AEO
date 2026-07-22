@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Marketer — Upload data</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0A0A0C;
+    --surface: #131417;
+    --surface-2: #191B20;
+    --border: #212328;
+    --text: #EDEDF0;
+    --text-muted: #86868C;
+    --accent: #F0A83C;
+    --success: #3ECF8E;
+    --danger: #F0708A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    padding: 44px 24px 90px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  header { margin-bottom: 28px; }
+  h1 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 30px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--text-muted); font-size: 14px; margin: 0 0 24px; }
+  .nav { font-size: 13px; margin-bottom: 28px; }
+  .nav a { color: var(--accent); text-decoration: none; }
+  .nav a:hover { text-decoration: underline; }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 32px;
+  }
+  .upload-hint { color: var(--text-muted); font-size: 13px; line-height: 1.6; margin: 0 0 16px; }
+  .upload-hint code { background: var(--surface-2); padding: 2px 6px; border-radius: 4px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  .dropzone {
+    border: 1.5px dashed var(--border);
+    border-radius: 14px;
+    padding: 36px 26px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone.drag-over { border-color: var(--accent); background: var(--surface-2); color: var(--text); }
+  .passphrase-input {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-top: 14px;
+    width: 100%;
+    max-width: 260px;
+    display: block;
+  }
+  .btn-upload {
+    background: var(--accent);
+    border: none;
+    color: #251804;
+    font-family: inherit;
+    font-weight: 500;
+    font-size: 14px;
+    padding: 11px 22px;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-top: 14px;
+  }
+  .btn-upload:disabled { opacity: 0.4; cursor: not-allowed; }
+  .upload-results { margin-top: 18px; }
+  .upload-ok, .upload-error { font-size: 13px; margin: 6px 0; line-height: 1.5; }
+  .upload-ok { color: var(--success); }
+  .upload-error { color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Upload data</h1>
+    <p class="sub">Drop AI visibility or shopify files to add them to the database.</p>
+    <p class="nav"><a href="/">← Back to dashboard</a></p>
+  </header>
+
+  <div class="panel">
+    <p class="upload-hint">Two file types are accepted, mixed in one batch:</p>
+    <ul class="upload-hint" style="padding-left: 20px;">
+      <li><strong>AI visibility</strong> — <code>.xlsx</code> files named <code>ClientName - Platform - YYYY-MM-DD.xlsx</code> (e.g. <code>Altenew - ChatGPT - 2026-07-21.xlsx</code>). Platform is the AI tool queried: <code>ChatGPT</code>, <code>Perplexity</code>, or <code>Google AI Mode</code>.</li>
+      <li><strong>Shopify report</strong> — <code>{client}-all-data.csv</code> files (e.g. <code>outdoor-vitals-all-data.csv</code>). These are the multi-section monthly report exports with <code>=== Section ===</code> blocks inside.</li>
+    </ul>
+    <div id="dropzone" class="dropzone">
+      <p id="dropzone-text">Drag files here, or click to choose</p>
+    </div>
+    <input type="file" id="file-input" multiple accept=".xlsx,.csv" style="display:none">
+    <input type="password" id="passphrase-input" class="passphrase-input" placeholder="Passphrase (if your team set one)">
+    <div>
+      <button id="upload-btn" class="btn-upload" type="button" disabled>Upload</button>
+    </div>
+    <div id="upload-results" class="upload-results"></div>
+  </div>
+</div>
+
+<script>
+let queuedFiles = [];
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+const dropzone = document.getElementById('dropzone');
+const dropzoneText = document.getElementById('dropzone-text');
+const fileInput = document.getElementById('file-input');
+const uploadBtn = document.getElementById('upload-btn');
+const uploadResults = document.getElementById('upload-results');
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+dropzone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropzone.classList.remove('drag-over');
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+function handleFiles(files) {
+  for (const f of files) queuedFiles.push(f);
+  dropzoneText.textContent = queuedFiles.length
+    ? `${queuedFiles.length} file${queuedFiles.length === 1 ? '' : 's'} queued`
+    : 'Drag files here, or click to choose';
+  uploadBtn.disabled = queuedFiles.length === 0;
+}
+
+uploadBtn.addEventListener('click', async () => {
+  uploadBtn.disabled = true;
+  uploadBtn.textContent = 'Uploading…';
+  uploadResults.innerHTML = '';
+  const formData = new FormData();
+  queuedFiles.forEach(f => formData.append('files', f));
+  formData.append('passphrase', document.getElementById('passphrase-input').value);
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    if (res.status === 401) {
+      uploadResults.innerHTML = '<p class="upload-error">Wrong passphrase - check with whoever set it up.</p>';
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = 'Upload';
+      return;
+    }
+    const results = await res.json();
+    uploadResults.innerHTML = results.map(r => r.status === 'ok'
+      ? `<p class="upload-ok">✓ ${escapeHtml(r.filename)} — loaded${r.client ? ' into ' + escapeHtml(r.client) : ''}${r.sections ? ' (' + r.sections + ' sections)' : ''}${r.rows ? ' (' + r.rows + ' rows)' : ''}</p>`
+      : `<p class="upload-error">✕ ${escapeHtml(r.filename)} — ${escapeHtml(r.reason)}</p>`
+    ).join('');
+    queuedFiles = [];
+    fileInput.value = '';
+    dropzoneText.textContent = 'Drag files here, or click to choose';
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = 'Upload';
+  } catch (err) {
+    uploadResults.innerHTML = '<p class="upload-error">Something went wrong sending the files - try again.</p>';
+    uploadBtn.disabled = false;
+    uploadBtn.textContent = 'Upload';
+  }
+});
+</script>
+</body>
+</html>

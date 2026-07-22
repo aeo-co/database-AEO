@@ -1,0 +1,27 @@
+# secrets / runtime
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# virtualenvs
+venv/
+ven/
+.venv/
+env/
+
+# editor / tooling
+.qodo/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# local data
+*.log
