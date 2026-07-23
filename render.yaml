@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: smartmarketer-datahub
+    runtime: python
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn dashboard:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: UPLOAD_PASSPHRASE
+        sync: false
+    autoDeploy: true
