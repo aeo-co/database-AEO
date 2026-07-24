@@ -5,7 +5,6 @@ from collections import Counter
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from db import get_conn
@@ -149,11 +148,6 @@ async def upload_files(files: list[UploadFile] = File(...), passphrase: str = Fo
 
 # Static frontend - must be mounted last so /api/* routes above take priority.
 app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="static")
-
-
-@app.get("/upload")
-def upload_page():
-    return FileResponse(Path(__file__).parent / "upload.html")
 
 
 if __name__ == "__main__":
