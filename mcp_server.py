@@ -22,7 +22,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from db import get_conn
-from ingest_ai_visibility import slugify
+from ingest_ai_visibility import slugify, ingest_file as ingest_ai_file
 
 # Bind to 0.0.0.0 by default so a VPS deployment is reachable from
 # outside the box. Override to 127.0.0.1 for strict local-only use.
@@ -36,12 +36,12 @@ mcp = FastMCP(
     json_response=True,
     streamable_http_path="/mcp",
     instructions=(
-        "Read-only access to the Smart Marketer Data Hub. Use "
-        "list_clients to discover available clients, then "
-        "get_ai_visibility_summary / get_ai_visibility_queries for the "
-        "AI visibility data, or get_shopify_report for the multi-section "
-        "shopify report. Pass `client` as a slug (e.g. 'altenew') or "
-        "as a name fragment (e.g. 'outdoor vitals') — both work."
+        "Smart Marketer Data Hub. Read tools: list_clients, "
+        "get_ai_visibility_summary, get_ai_visibility_queries, "
+        "get_top_mentions, get_shopify_report. Write tool: "
+        "ingest_file(path, passphrase) — runs the same pipeline as "
+        "the /upload.html form. Pass `client` as a slug or a name "
+        "fragment — both work."
     ),
 )
 
@@ -245,6 +245,28 @@ def get_shopify_report(client: str) -> dict:
         "section_count": len(sections),
         "sections": sections,
     }
+
+
+@mcp.tool()
+def ingest_file(path: str, passphrase: str = "") -> dict:
+    """
+    Ingest one AI-visibility .xlsx file. Same code path as /upload.html
+    on the dashboard — runs the existing ingest pipeline (filename
+    parser, slug/date inference, upsert by client+platform+date+query_hash).
+    Returns {filename, status, client, rows} on success, or
+    {filename, status: 'skipped', reason: ...} on a bad filename.
+    The optional `passphrase` is checked only if the server was started
+    with UPLOAD_PASSPHRASE set; pass it as a string.
+    """
+    import os as _os
+    expected = _os.getenv("UPLOAD_PASSPHRASE")
+    if expected and passphrase != expected:
+        return {"status": "error", "reason": "wrong passphrase"}
+    from pathlib import Path as _P
+    p = _P(path)
+    if not p.exists():
+        return {"filename": p.name, "status": "error", "reason": f"file not found: {path}"}
+    return ingest_ai_file(p)
 
 
 if __name__ == "__main__":
