@@ -143,7 +143,10 @@ def ingest_file(path: Path) -> dict:
             date_from_name = pd.to_datetime(d.group("date")).date()
 
     if path.suffix.lower() == ".csv":
-        df = pd.read_csv(path)
+        try:
+            df = pd.read_csv(path)
+        except UnicodeDecodeError:
+            df = pd.read_csv(path, encoding="latin-1")
     else:
         df = pd.read_excel(path, sheet_name=0)
     df.columns = [c.strip() for c in df.columns]
@@ -157,11 +160,13 @@ def ingest_file(path: Path) -> dict:
     # If a Platform column is present, that wins - the file is a bundled
     # multi-platform export regardless of what the filename looks like.
     if "Platform" in df.columns:
-        brand_value = next(
-            (str(v).strip() for v in df["Brand"] if pd.notna(v)
-             and str(v).strip().lower() != "nan"),
-            None,
-        )
+        brand_value = None
+        if "Brand" in df.columns:
+            brand_value = next(
+                (str(v).strip() for v in df["Brand"] if pd.notna(v)
+                 and str(v).strip().lower() != "nan"),
+                None,
+            )
         client_name = client_from_name or brand_value or ""
         if not client_name or date_from_name is None:
             return {
