@@ -25,7 +25,10 @@ from psycopg.types.json import Jsonb
 from db import get_conn
 from ingest_ai_visibility import slugify
 
-FILENAME_RE = re.compile(r"^(?P<client>.+?)-all-data\.csv$", re.IGNORECASE)
+# Accept both monthly ({client}-all-data.csv) and weekly ({client}-weekly-*.csv)
+# exports. Weekly files carry their period/client in the === Report Meta ===
+# section (the "Reporting period" and "Client slug" fields), not in the name.
+FILENAME_RE = re.compile(r"^(?P<client>.+?)-(?:all-data|weekly-.+)\.csv$", re.IGNORECASE)
 SECTION_RE = re.compile(r"^===\s*(.+?)\s*===$")
 
 
@@ -40,6 +43,16 @@ def get_or_create_client(cur, name: str) -> int:
         (name.strip(), slug),
     )
     return cur.fetchone()["id"]
+
+
+def parse_meta(sections: dict) -> dict:
+    """Extract key/value pairs from the === Report Meta === section."""
+    meta = {}
+    for line in sections.get("Report Meta", []):
+        if "," in line:
+            k, v = line.split(",", 1)
+            meta[k.strip().lower()] = v.strip().strip('"')
+    return meta
 
 
 def parse_sections(text: str) -> dict:
@@ -77,7 +90,7 @@ def ingest_file(path: Path) -> dict:
         return {
             "filename": path.name,
             "status": "skipped",
-            "reason": "name doesn't match '{client}-all-data.csv'",
+            "reason": "name doesn't match '{client}-all-data.csv' or '{client}-weekly-*.csv'",
         }
 
     client_name = m.group("client").replace("-", " ").replace("_", " ").strip().title()
@@ -87,6 +100,14 @@ def ingest_file(path: Path) -> dict:
     if not sections:
         return {"filename": path.name, "status": "skipped", "reason": "no '=== section ===' markers found"}
 
+    # Weekly exports carry the real client name + period in === Report Meta ===
+    # (the filename is a slug-ish shorthand). Prefer that over the filename so
+    # weekly files land on the existing client instead of creating an orphan.
+    meta = parse_meta(sections)
+    report_period = meta.get("reporting period")
+    if meta.get("client"):
+        client_name = meta["client"]
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             client_id = get_or_create_client(cur, client_name)
@@ -94,9 +115,10 @@ def ingest_file(path: Path) -> dict:
                 columns, rows = parse_csv_lines(lines)
                 cur.execute(
                     """
-                    INSERT INTO shopify_report_sections (client_id, section_name, columns, rows, source_file)
-                    VALUES (%(client_id)s, %(section_name)s, %(columns)s, %(rows)s, %(source_file)s)
-                    ON CONFLICT (client_id, section_name) DO UPDATE SET
+                    INSERT INTO shopify_report_sections (client_id, section_name, report_period, columns, rows, source_file)
+                    VALUES (%(client_id)s, %(section_name)s, %(report_period)s, %(columns)s, %(rows)s, %(source_file)s)
+                    ON CONFLICT (client_id, section_name, COALESCE(report_period, ''))
+                    DO UPDATE SET
                         columns = EXCLUDED.columns,
                         rows = EXCLUDED.rows,
                         source_file = EXCLUDED.source_file,
@@ -105,6 +127,7 @@ def ingest_file(path: Path) -> dict:
                     {
                         "client_id": client_id,
                         "section_name": section_name,
+                        "report_period": report_period,
                         "columns": Jsonb(columns),
                         "rows": Jsonb(rows),
                         "source_file": path.name,
@@ -116,6 +139,8 @@ def ingest_file(path: Path) -> dict:
         "status": "ok",
         "client": client_name,
         "client_slug": slugify(client_name),
+        "report_type": "weekly" if report_period else "monthly",
+        "report_period": report_period,
         "sections": len(sections),
     }
 

@@ -96,11 +96,12 @@ CREATE TABLE IF NOT EXISTS shopify_report_sections (
     id SERIAL PRIMARY KEY,
     client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
     section_name TEXT NOT NULL,
+    report_period TEXT,                 -- NULL = monthly, else e.g. 'August 1 - August 7, 2026'
     columns JSONB NOT NULL,
     rows JSONB NOT NULL,
     source_file TEXT,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (client_id, section_name)
+    UNIQUE (client_id, section_name, COALESCE(report_period, ''))
 );
 
 CREATE INDEX IF NOT EXISTS idx_ga4_client_week ON ga4_weekly (client_id, week_start);

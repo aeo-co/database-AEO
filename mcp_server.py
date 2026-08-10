@@ -13,7 +13,7 @@ The tools are read-only primitives over the existing schema. The agent
 verdict — we deliberately do not hard-code thresholds here, per the
 "AI visibility data needs to be as it is, no changes" direction.
 
-Resources: none. Tools: five. All return JSON.
+Resources: none. Tools: seven. All return JSON.
 """
 import os
 import re
@@ -23,6 +23,7 @@ from mcp.server.fastmcp import FastMCP
 
 from db import get_conn
 from ingest_ai_visibility import slugify, ingest_file as ingest_ai_file
+from ingest_shopify_reports import ingest_file as _ingest_csv
 
 # Bind to 0.0.0.0 by default so a VPS deployment is reachable from
 # outside the box. Override to 127.0.0.1 for strict local-only use.
@@ -38,10 +39,10 @@ mcp = FastMCP(
     instructions=(
         "Smart Marketer Data Hub. Read tools: list_clients, "
         "get_ai_visibility_summary, get_ai_visibility_queries, "
-        "get_top_mentions, get_shopify_report. Write tool: "
-        "ingest_file(path, passphrase) — runs the same pipeline as "
-        "the /upload.html form. Pass `client` as a slug or a name "
-        "fragment — both work."
+        "get_top_mentions, get_shopify_report. Write tools: "
+        "ingest_file(path, passphrase) — AI visibility .xlsx. "
+        "ingest_shopify_file(path, passphrase) — Shopify .csv. "
+        "Both run the same pipeline as the /upload.html form."
     ),
 )
 
@@ -97,7 +98,7 @@ def list_clients() -> list[dict]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, name, slug, created_at FROM clients ORDER BY name;"
+                "SELECT id, name, slug, manager, created_at FROM clients ORDER BY name;"
             )
             rows = cur.fetchall()
     for r in rows:
@@ -229,10 +230,10 @@ def get_shopify_report(client: str) -> dict:
                 return {"error": f"no client matching '{client}'"}
             cur.execute(
                 """
-                SELECT section_name, columns, rows, source_file, ingested_at
+                SELECT section_name, report_period, columns, rows, source_file, ingested_at
                 FROM shopify_report_sections
                 WHERE client_id = %(cid)s
-                ORDER BY id;
+                ORDER BY report_period NULLS FIRST, id;
                 """,
                 {"cid": c["id"]},
             )
@@ -267,6 +268,26 @@ def ingest_file(path: str, passphrase: str = "") -> dict:
     if not p.exists():
         return {"filename": p.name, "status": "error", "reason": f"file not found: {path}"}
     return ingest_ai_file(p)
+
+
+@mcp.tool()
+def ingest_shopify_file(path: str, passphrase: str = "") -> dict:
+    """
+    Ingest one Shopify report .csv file (named {client}-all-data.csv).
+    Same code path as the dashboard upload — parses === Section === blocks
+    and stores each section generically. Returns {filename, status, client,
+    sections} on success, or {filename, status: 'skipped', reason: ...} on
+    a bad filename. Optional passphrase checked if UPLOAD_PASSPHRASE is set.
+    """
+    import os as _os
+    expected = _os.getenv("UPLOAD_PASSPHRASE")
+    if expected and passphrase != expected:
+        return {"status": "error", "reason": "wrong passphrase"}
+    from pathlib import Path as _P
+    p = _P(path)
+    if not p.exists():
+        return {"filename": p.name, "status": "error", "reason": f"file not found: {path}"}
+    return _ingest_csv(p)
 
 
 if __name__ == "__main__":

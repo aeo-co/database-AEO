@@ -97,7 +97,7 @@
     <p class="upload-hint">Two file types are accepted, mixed in one batch:</p>
     <ul class="upload-hint" style="padding-left: 20px;">
       <li><strong>AI visibility</strong> — <code>.xlsx</code> files named <code>ClientName - Platform - YYYY-MM-DD.xlsx</code> (e.g. <code>Altenew - ChatGPT - 2026-07-21.xlsx</code>). Platform is the AI tool queried: <code>ChatGPT</code>, <code>Perplexity</code>, or <code>Google AI Mode</code>.</li>
-      <li><strong>Shopify report</strong> — <code>{client}-all-data.csv</code> files (e.g. <code>outdoor-vitals-all-data.csv</code>). These are the multi-section monthly report exports with <code>=== Section ===</code> blocks inside.</li>
+      <li><strong>Shopify report</strong> — <code>{client}-all-data.csv</code> files (e.g. <code>outdoor-vitals-all-data.csv</code>) or weekly exports named <code>{client}-weekly-DATE-to-DATE.csv</code> (e.g. <code>livingwell-weekly-2026-08-01-to-08-07.csv</code>). These are the multi-section report exports with <code>=== Section ===</code> blocks inside. Weekly files store their own period alongside the monthly report — they never overwrite it.</li>
     </ul>
     <div id="dropzone" class="dropzone">
       <p id="dropzone-text">Drag files here, or click to choose</p>
@@ -159,7 +159,7 @@ uploadBtn.addEventListener('click', async () => {
     }
     const results = await res.json();
     uploadResults.innerHTML = results.map(r => r.status === 'ok'
-      ? `<p class="upload-ok">✓ ${escapeHtml(r.filename)} — loaded${r.client ? ' into ' + escapeHtml(r.client) : ''}${r.sections ? ' (' + r.sections + ' sections)' : ''}${r.rows ? ' (' + r.rows + ' rows)' : ''}</p>`
+      ? `<p class="upload-ok">✓ ${escapeHtml(r.filename)} — loaded into ${escapeHtml(r.client)}${r.report_type ? ' as ' + escapeHtml(r.report_type) + (r.report_period ? ` (${escapeHtml(r.report_period)})` : '') : ''}${r.sections ? ' — ' + r.sections + ' sections' : ''}${r.rows ? ' — ' + r.rows + ' rows' : ''}</p>`
       : `<p class="upload-error">✕ ${escapeHtml(r.filename)} — ${escapeHtml(r.reason)}</p>`
     ).join('');
     queuedFiles = [];
