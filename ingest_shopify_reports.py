@@ -23,26 +23,13 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from db import get_conn
-from ingest_ai_visibility import slugify
+from ingest_ai_visibility import get_or_create_client, slugify
 
 # Accept both monthly ({client}-all-data.csv) and weekly ({client}-weekly-*.csv)
 # exports. Weekly files carry their period/client in the === Report Meta ===
 # section (the "Reporting period" and "Client slug" fields), not in the name.
 FILENAME_RE = re.compile(r"^(?P<client>.+?)-(?:all-data|weekly-.+)\.csv$", re.IGNORECASE)
 SECTION_RE = re.compile(r"^===\s*(.+?)\s*===$")
-
-
-def get_or_create_client(cur, name: str) -> int:
-    slug = slugify(name)
-    cur.execute(
-        """
-        INSERT INTO clients (name, slug) VALUES (%s, %s)
-        ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
-        RETURNING id;
-        """,
-        (name.strip(), slug),
-    )
-    return cur.fetchone()["id"]
 
 
 def parse_meta(sections: dict) -> dict:

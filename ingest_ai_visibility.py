@@ -102,19 +102,24 @@ def collect_mentions(row: dict) -> list:
     return [row[c].strip() for c in mention_cols if isinstance(row[c], str) and row[c].strip()]
 
 
+def flatten(text: str) -> str:
+    """Lowercase, strip all non-alphanumerics: 'Outdoor Vitals' == 'Outdoorvitals'."""
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
 def get_or_create_client(cur, name: str) -> int:
     name = name.strip()
     slug = slugify(name)
-    # First, see if either the slug or the (case-insensitive) name already
-    # exists - the ON CONFLICT below only catches slug collisions, but the
-    # name column is also unique, so an existing client with a different
-    # slug (e.g. "Outdoorvitals" vs "outdoor-vitals") would still hit a
-    # unique-violation on insert. Resolve to the existing row instead.
+    key = flatten(name)
+    # Match an existing client by its flattened name so case/spacing/hyphen
+    # variants ("Outdoorvitals" vs "Outdoor Vitals", "Theswellscore" vs
+    # "The Swell Score") resolve to the same row instead of spawning a
+    # duplicate client.
     cur.execute(
         "SELECT id FROM clients "
-        "WHERE slug = %s OR lower(name) = lower(%s) "
+        "WHERE slug = %s OR regexp_replace(lower(name), '[^a-z0-9]', '', 'g') = %s "
         "LIMIT 1;",
-        (slug, name),
+        (slug, key),
     )
     row = cur.fetchone()
     if row:
