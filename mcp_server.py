@@ -22,6 +22,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from db import get_conn
+from client_context import fetch_client_context, upsert_client_context
 from ingest_ai_visibility import slugify, ingest_file as ingest_ai_file
 from ingest_shopify_reports import ingest_file as _ingest_csv
 
@@ -288,6 +289,78 @@ def ingest_shopify_file(path: str, passphrase: str = "") -> dict:
     if not p.exists():
         return {"filename": p.name, "status": "error", "reason": f"file not found: {path}"}
     return _ingest_csv(p)
+
+
+@mcp.tool()
+def get_client_context(client: str, context_type: str) -> dict:
+    """
+    Fetch whole brand-context markdown documents for one client by
+    context_type — 'brand_voice', 'icp', 'journey_map', 'case_study',
+    etc. Returns the full markdown text of each matching doc so an LLM
+    content pipeline can pull the right context before generating posts.
+    `client` accepts id, slug, or a name fragment (same resolution as
+    the other tools).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"error": f"no client matching '{client}'"}
+    rows = fetch_client_context(c["id"], context_type)
+    return {
+        "client": c["name"],
+        "slug": c["slug"],
+        "context_type": context_type,
+        "count": len(rows),
+        "contexts": rows,
+    }
+
+
+@mcp.tool()
+def ingest_client_context(
+    client: str,
+    context_type: str,
+    content: str,
+    title: str = "",
+    metadata: Optional[dict] = None,
+    passphrase: str = "",
+) -> dict:
+    """
+    Store one brand-context markdown document for a client and embed it
+    for semantic search. `content` is the WHOLE markdown doc (not
+    fragmented). Upserts on (client, context_type, title) — re-ingesting
+    replaces the previous doc. Embedding uses EMBEDDING_API_KEY /
+    EMBEDDING_MODEL configured on the server. Optional passphrase
+    checked if UPLOAD_PASSPHRASE is set (same gate as the other write
+    tools).
+    """
+    import os as _os
+    expected = _os.getenv("UPLOAD_PASSPHRASE")
+    if expected and passphrase != expected:
+        return {"status": "error", "reason": "wrong passphrase"}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"status": "error", "reason": f"no client matching '{client}'"}
+    try:
+        result = upsert_client_context(
+            client_id=c["id"],
+            context_type=context_type,
+            content=content,
+            title=title or None,
+            metadata=metadata or {},
+        )
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+    return {
+        "status": "ok",
+        "inserted" if result["inserted"] else "replaced": True,
+        "id": result["id"],
+        "client": c["name"],
+        "context_type": context_type,
+        "title": result["title"],
+    }
 
 
 if __name__ == "__main__":
