@@ -17,9 +17,14 @@ CREATE TABLE IF NOT EXISTS client_contexts (
     embedding vector(1536),              -- OpenAI text-embedding-3-small by default
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     source_file TEXT,
-    ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (client_id, context_type, COALESCE(title, ''))
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Expression unique key (COALESCE isn't allowed inline in a table
+-- constraint): enables upsert on (client_id, context_type, title)
+-- where a NULL title is treated as ''.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_client_contexts_key
+    ON client_contexts (client_id, context_type, COALESCE(title, ''));
 
 COMMENT ON TABLE client_contexts IS
     'Per-client brand context docs (brand voice, ICP, journey maps) for the LLM content pipeline. One whole markdown doc per row.';
