@@ -329,8 +329,9 @@ def ingest_client_context(
     Store one brand-context markdown document for a client and embed it
     for semantic search. `content` is the WHOLE markdown doc (not
     fragmented). Upserts on (client, context_type, title) — re-ingesting
-    replaces the previous doc. Embedding uses EMBEDDING_API_KEY /
-    EMBEDDING_MODEL configured on the server. Optional passphrase
+    replaces the previous doc. Embedding uses the LOCAL sentence-
+    transformers model (all-MiniLM-L6-v2) — no API key needed. Optional
+    passphrase
     checked if UPLOAD_PASSPHRASE is set (same gate as the other write
     tools).
     """

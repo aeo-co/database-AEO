@@ -2,42 +2,43 @@
 Shared embedding + upsert helpers for client brand context.
 
 One whole markdown document per row (no fragmentation). Embedding is
-generated at ingest time via OpenAI text-embedding-3-small (1536-dim);
-the same helper is used by both the CLI script and the MCP tool so they
-never drift.
+generated at ingest time with a LOCAL sentence-transformers model
+(all-MiniLM-L6-v2, 384-dim) running on the server — no API key, no
+external calls. The same helper is used by both the CLI script and the
+MCP tool so they never drift.
 
 Env:
     DATABASE_URL or DB_* vars   (see db.py)
-    EMBEDDING_API_KEY           OpenAI key; falls back to OPENAI_API_KEY
-    EMBEDDING_MODEL             default: text-embedding-3-small
+    EMBEDDING_MODEL             HF model id; default: all-MiniLM-L6-v2
 """
 import os
 
-import openai
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from db import get_conn
 
-EMBEDDING_DIM = 1536  # text-embedding-3-small
+EMBEDDING_DIM = 384  # all-MiniLM-L6-v2
+
+_model = None
 
 
-def get_embedding_client() -> "openai.OpenAI":
-    api_key = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "Set EMBEDDING_API_KEY (or OPENAI_API_KEY) in the environment / .env"
-        )
-    return openai.OpenAI(api_key=api_key)
+def _get_model():
+    """Lazy-load the sentence-transformers model once per process."""
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+
+        name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        _model = SentenceTransformer(name)
+    return _model
 
 
 def embed_text(text: str) -> list[float]:
-    """Embed one document with the configured model. No chunking — the
-    whole doc goes in one call (8191-token input cap on 3-small)."""
-    model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    client = get_embedding_client()
-    resp = client.embeddings.create(model=model, input=text)
-    return resp.data[0].embedding
+    """Embed one document with the local model. No chunking — MiniLM
+    handles up to 256 word-piece tokens per pass; long docs are mean-
+    pooled by the model itself."""
+    return _get_model().encode(text, normalize_embeddings=True).tolist()
 
 
 def upsert_client_context(
@@ -106,4 +107,27 @@ def fetch_client_context(client_id: int, context_type: str) -> list[dict]:
             rows = cur.fetchall()
     for r in rows:
         r["ingested_at"] = r["ingested_at"].isoformat()
+    return rows
+
+
+def search_client_context(client_id: int, query: str, top_k: int = 5) -> list[dict]:
+    """Semantic search over one client's context docs by cosine distance."""
+    vec = embed_text(query)
+    with get_conn() as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, context_type, title, content,
+                       1 - (embedding <=> %s::vector) AS score
+                FROM client_contexts
+                WHERE client_id = %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s;
+                """,
+                (vec, client_id, vec, top_k),
+            )
+            rows = cur.fetchall()
+    for r in rows:
+        r["score"] = float(r["score"])
     return rows

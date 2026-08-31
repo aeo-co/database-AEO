@@ -7,8 +7,8 @@ Usage:
 
 Client can be the id, the slug, or a name fragment — same resolution
 the MCP server uses. Embedding provider/key comes from the environment:
-EMBEDDING_API_KEY (or OPENAI_API_KEY), model via EMBEDDING_MODEL
-(default text-embedding-3-small, 1536-dim — must match the vector
+Local sentence-transformers model on the server (all-MiniLM-L6-v2,
+384-dim — must match the vector
 column dimension in migrate_client_contexts.sql).
 
 Requires the pgvector package:  pip install pgvector openai
