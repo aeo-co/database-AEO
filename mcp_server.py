@@ -544,33 +544,94 @@ def _kg_node_for_client(cur, query: str) -> int:
     return cur.fetchone()["id"]
 
 
+def _kg_resolve_any_node(cur, entity_type: str, entity_key: str) -> int:
+    """Resolve (or lazily create) a kg node for any entity type.
+
+    entity_type 'client' resolves via _kg_node_for_client (flexible name
+    matching). 'context' auto-mirrors from client_contexts by numeric id
+    ('context:12'). Other types ('campaign', 'case_study', 'topic',
+    'custom') are created on demand with a human label from the key.
+    """
+    if entity_type == "client":
+        return _kg_node_for_client(cur, entity_key)
+    if entity_type == "context":
+        num = re.sub(r"[^0-9]", "", str(entity_key))
+        if not num:
+            raise ValueError(f"context key must be numeric id, got {entity_key!r}")
+        key = f"context:{num}"
+        cur.execute(
+            "SELECT cc.id, COALESCE(NULLIF(cc.title, ''), 'untitled') AS label, "
+            "c.slug AS client_slug "
+            "FROM client_contexts cc JOIN clients c ON c.id = cc.client_id "
+            "WHERE cc.id = %s", (int(num),))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"no client_contexts row id={num}")
+        cur.execute(
+            """
+            INSERT INTO kg_nodes (entity_type, entity_key, label, props)
+            VALUES ('context', %s, %s, jsonb_build_object('client', %s))
+            ON CONFLICT (entity_type, entity_key)
+            DO UPDATE SET label = EXCLUDED.label
+            RETURNING id
+            """,
+            (key, row["label"], row["client_slug"]))
+        return cur.fetchone()["id"]
+    # generic types: campaign / case_study / topic / custom — create on demand
+    if entity_type not in ("campaign", "case_study", "topic", "custom"):
+        raise ValueError(f"unknown entity_type {entity_type!r}; use client, "
+                         "context, campaign, case_study, topic, or custom")
+    if not entity_key:
+        raise ValueError("entity_key is required for non-client types")
+    key = f"{entity_type}:{entity_key}" if not str(entity_key).startswith(f"{entity_type}:") else entity_key
+    cur.execute(
+        """
+        INSERT INTO kg_nodes (entity_type, entity_key, label, props)
+        VALUES (%s, %s, %s, '{}'::jsonb)
+        ON CONFLICT (entity_type, entity_key) DO UPDATE SET label = EXCLUDED.label
+        RETURNING id
+        """,
+        (entity_type, key, str(entity_key).replace(f"{entity_type}:", "").replace("-", " ").title()))
+    return cur.fetchone()["id"]
+
+
 @mcp.tool()
 def get_related(
-    client: str,
+    entity: str = "",
+    entity_type: str = "client",
     rel_type: Optional[str] = None,
     depth: int = 1,
     limit: int = 50,
 ) -> dict:
     """
-    "What's connected to Client X?" — traverse the knowledge graph from
-    a client's node up to `depth` hops (1-4). Returns every reachable
-    node: similar clients (via similar_to), their context docs (via
-    belongs_to), campaigns, case studies, topics. Natural questions:
-    "what's connected to X?", "what do we know around X?", "which
-    clients relate to X?". Optional rel_type filter ('similar_to',
-    'belongs_to', 'mentions', 'relates_to'). For the full client
-    picture including this, use get_client_profile.
+    "What's connected to X?" — traverse the knowledge graph from ANY
+    entity up to `depth` hops (1-4), following edges in both
+    directions. Works for clients AND any other entity:
+    entity_type='client' with a client name/slug ('outdoor vitals'),
+    entity_type='context' with a context doc id ('context:1' or '1'),
+    or entity_type='campaign'/'case_study'/'topic'/'custom' with a key.
+    Returns every reachable node (clients, their context docs,
+    campaigns, case studies, topics) with the relationship type and
+    hop distance. Natural questions: "what's connected to this case
+    study?", "what links to context 1?", "what do we know around X?".
+    Optional rel_type filter ('similar_to', 'belongs_to', 'mentions',
+    'relates_to', ...). For the full client picture in one call, use
+    get_client_profile.
     """
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                node_id = _kg_node_for_client(cur, client)
-                cur.execute("SELECT entity_key FROM kg_nodes WHERE id = %s", (node_id,))
+                node_id = _kg_resolve_any_node(cur, entity_type, entity)
+                cur.execute(
+                    "SELECT entity_key FROM kg_nodes WHERE id = %s", (node_id,))
                 entity_key = cur.fetchone()["entity_key"]
         from kg import get_related as kg_get_related
         result = kg_get_related(
-            "client", entity_key, rel_type=rel_type, depth=depth, limit=limit)
-        result["root"]["label"] = result["root"].get("label") or client
+            entity_type, entity_key, rel_type=rel_type, depth=depth, limit=limit)
+        # hide the root from its own results (undirected walk revisits it)
+        result["related"] = [n for n in result["related"]
+                             if n["entity_key"] != entity_key]
+        result["root"]["label"] = result["root"].get("label") or entity
         return result
     except ValueError as e:
         return {"error": str(e)}
@@ -656,6 +717,7 @@ def add_edge(
                     if client_q:
                         return _kg_node_for_client(cur, client_q)
                     if key:
+                        # accept bare 'context:2' style keys OR 'type|key' pairs
                         cur.execute(
                             "SELECT id FROM kg_nodes WHERE entity_key = %s", (key,))
                         r = cur.fetchone()
