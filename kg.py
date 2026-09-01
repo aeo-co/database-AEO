@@ -110,9 +110,11 @@ def get_related(entity_type: str, entity_key: str, rel_type: Optional[str] = Non
             if root is None:
                 raise ValueError(f"no node {entity_type}:{entity_key}")
             rel_filter = "AND e.rel_type = %s" if rel_type else ""
-            params = [root["id"], limit]
+            rel_filter_rev = rel_filter  # same filter on the reverse branch
             if rel_type:
-                params.insert(1, rel_type)
+                params = [root["id"], rel_type, root["id"], rel_type, depth, limit]
+            else:
+                params = [root["id"], root["id"], depth, limit]
             cur.execute(
                 f"""
                 WITH RECURSIVE walk AS (
@@ -121,10 +123,14 @@ def get_related(entity_type: str, entity_key: str, rel_type: Optional[str] = Non
                     FROM kg_edges e
                     WHERE e.src_id = %s {rel_filter}
                     UNION
-                    SELECT e.dst_id, e.rel_type, w.hops + 1,
-                           w.edge_path || e.id
+                    SELECT e.src_id, e.rel_type, 1, ARRAY[e.id]
                     FROM kg_edges e
-                    JOIN walk w ON e.src_id = w.node_id
+                    WHERE e.dst_id = %s {rel_filter_rev}
+                    UNION
+                    SELECT CASE WHEN e.src_id = w.node_id THEN e.dst_id ELSE e.src_id END,
+                           e.rel_type, w.hops + 1, w.edge_path || e.id
+                    FROM kg_edges e
+                    JOIN walk w ON (e.src_id = w.node_id OR e.dst_id = w.node_id)
                     WHERE w.hops < %s
                       AND NOT e.id = ANY(w.edge_path)
                 )
@@ -135,8 +141,7 @@ def get_related(entity_type: str, entity_key: str, rel_type: Optional[str] = Non
                 ORDER BY n.id, w.hops
                 LIMIT %s
                 """,
-                ([root["id"], depth, limit] if not rel_type
-                 else [root["id"], rel_type, depth, limit]),
+                params,
             )
             paths = cur.fetchall()
             cur.execute(
