@@ -38,12 +38,20 @@ mcp = FastMCP(
     json_response=True,
     streamable_http_path="/mcp",
     instructions=(
-        "Smart Marketer Data Hub. Read tools: list_clients, "
-        "get_ai_visibility_summary, get_ai_visibility_queries, "
-        "get_top_mentions, get_shopify_report. Write tools: "
-        "ingest_file(path, passphrase) — AI visibility .xlsx. "
-        "ingest_shopify_file(path, passphrase) — Shopify .csv. "
-        "Both run the same pipeline as the /upload.html form."
+        "Agency-wide source of truth for client information. When asked "
+        "anything about a client, START with get_client_profile(client) — "
+        "it returns everything in one call: AI visibility scores, "
+        "competitors, Shopify report index, brand voice/ICP docs, and "
+        "graph connections. Narrower tools: list_clients (roster), "
+        "get_ai_visibility_summary / get_ai_visibility_queries (visibility "
+        "numbers and raw AI answers), get_top_mentions (competitor brands), "
+        "get_shopify_report (GSC/sales sections), get_client_context "
+        "(one context doc type), get_related / find_similar_clients "
+        "(knowledge graph). Write tools: ingest_file (.xlsx visibility "
+        "audit), ingest_shopify_file (.csv all-data report), "
+        "ingest_client_context (save brand voice/ICP docs), add_edge "
+        "(link entities), refresh_similar_clients (recompute similarity). "
+        "Client names resolve flexibly — slug, partial name, or id."
     ),
 )
 
@@ -92,9 +100,13 @@ def _num(val):
 @mcp.tool()
 def list_clients() -> list[dict]:
     """
-    List every client in the database with their slug and id. Use this
-    first when the user asks about a client by name and you need the
-    slug to call the other tools.
+    List every client in the database (name, slug, id, manager). Call
+    this first whenever a question mentions a client by name and you
+    need their slug for other tools. Natural questions this answers:
+    "which clients do we have?", "who are our clients?", "list clients",
+    "who manages client X?". For EVERYTHING about one client in one call
+    (visibility scores, Shopify reports, brand contexts, related
+    entities), prefer get_client_profile instead.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -108,12 +120,142 @@ def list_clients() -> list[dict]:
 
 
 @mcp.tool()
+def get_client_profile(client: str) -> dict:
+    """
+    ONE-CALL complete profile of a single client — the "everything we
+    know about client X" tool. Assembles in one response: basic info
+    (name, slug, manager), AI visibility summary per platform (scores,
+    positions, query counts, date range), top competitor brands
+    mentioned alongside them, their Shopify report section index, all
+    brand-context documents (brand voice, ICP, journey maps, case
+    studies), and knowledge-graph connections (similar clients, related
+    entities). Use this for: "tell me everything about Winona", "give
+    me the full picture on client X", "brief me on [client]" — any
+    question that needs the whole story. For a single narrow slice
+    (e.g. just visibility numbers or just the brand voice doc), the
+    focused tools get_ai_visibility_summary / get_client_context are
+    cheaper.
+    """
+    import json as _json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"error": f"no client matching '{client}'"}
+            cid = c["id"]
+
+            # --- basic info
+            cur.execute(
+                "SELECT id, name, slug, manager, created_at FROM clients WHERE id = %s;",
+                (cid,))
+            basic = cur.fetchone()
+            basic["created_at"] = basic["created_at"].isoformat()
+
+            # --- AI visibility summary (per platform)
+            cur.execute(
+                """
+                SELECT platform, count(*) AS queries_tested,
+                       avg(visibility_score) AS avg_visibility_score,
+                       avg(brand_position) AS avg_brand_position,
+                       min(check_date) AS first_check,
+                       max(check_date) AS last_check
+                FROM ai_visibility_checks WHERE client_id = %s
+                GROUP BY platform ORDER BY platform;
+                """, (cid,))
+            visibility = cur.fetchall()
+            for p in visibility:
+                p["avg_visibility_score"] = _num(p["avg_visibility_score"])
+                p["avg_brand_position"] = _num(p["avg_brand_position"])
+                p["first_check"] = p["first_check"].isoformat() if p["first_check"] else None
+                p["last_check"] = p["last_check"].isoformat() if p["last_check"] else None
+
+            # --- top mentioned competitor brands
+            cur.execute(
+                "SELECT mentions FROM ai_visibility_checks WHERE client_id = %s;", (cid,))
+            own = c["name"].strip().lower()
+            counts: dict[str, int] = {}
+            for r in cur.fetchall():
+                for m in (r["mentions"] or []):
+                    name = (m or "").strip()
+                    if not name or own in name.lower():
+                        continue
+                    counts[name] = counts.get(name, 0) + 1
+            top_mentions = [{"name": n, "count": cnt} for n, cnt in
+                            sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:10]]
+
+            # --- Shopify report section index
+            cur.execute(
+                """
+                SELECT section_name, report_period, source_file,
+                       jsonb_array_length(columns) AS n_columns,
+                       jsonb_array_length(rows) AS n_rows, ingested_at
+                FROM shopify_report_sections WHERE client_id = %s
+                ORDER BY report_period NULLS FIRST, section_name;
+                """, (cid,))
+            shopify_sections = cur.fetchall()
+            for s in shopify_sections:
+                s["ingested_at"] = s["ingested_at"].isoformat() if s["ingested_at"] else None
+
+            # --- all brand-context docs (every type)
+            cur.execute(
+                """
+                SELECT id, context_type, title, content, source_file, ingested_at
+                FROM client_contexts WHERE client_id = %s
+                ORDER BY context_type, ingested_at DESC;
+                """, (cid,))
+            contexts = cur.fetchall()
+            for r in contexts:
+                r["ingested_at"] = r["ingested_at"].isoformat() if r["ingested_at"] else None
+
+            # --- knowledge-graph: related nodes (1-2 hops)
+            try:
+                from kg import get_related as kg_related
+                cur.execute(
+                    "SELECT id, entity_key FROM kg_nodes "
+                    "WHERE entity_type='client' AND entity_key = 'client:' || %s;",
+                    (c["slug"],))
+                kg_row = cur.fetchone()
+                if kg_row:
+                    kg = kg_related("client", kg_row["entity_key"], depth=2, limit=30)
+                    kg_related_nodes = kg.get("related", [])
+                else:
+                    kg_related_nodes = []
+            except Exception as e:  # KG tables may not exist yet — degrade gracefully
+                kg_related_nodes = [{"note": f"knowledge graph unavailable: {e}"}]
+
+    return {
+        "client": basic,
+        "ai_visibility": {
+            "platforms": visibility,
+            "top_competitor_brands": top_mentions,
+        },
+        "shopify_report": {
+            "section_count": len(shopify_sections),
+            "sections": shopify_sections,
+        },
+        "brand_contexts": {
+            "count": len(contexts),
+            "docs": contexts,
+        },
+        "knowledge_graph": {
+            "related": kg_related_nodes,
+        },
+    }
+
+
+@mcp.tool()
 def get_ai_visibility_summary(client: str) -> dict:
     """
     Per-platform AI visibility summary for one client: how many queries
-    were tested on each platform, the average visibility score, and
-    the average brand position. This is the high-level health read —
-    start here when asked "how is client X doing on AI visibility?".
+    were tested on each platform (chatgpt, perplexity, google_ai_mode),
+    the average visibility score (how often the brand appears in AI
+    answers), and the average brand position. Natural questions this
+    answers: "how visible is X in AI?", "how is X doing on AI
+    visibility?", "is X showing up in ChatGPT/Perplexity?". For full
+    query-level rows (the actual raw AI answers), use
+    get_ai_visibility_queries; for the whole client picture in one call,
+    use get_client_profile.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -152,11 +294,14 @@ def get_ai_visibility_queries(
     limit: int = 50,
 ) -> list[dict]:
     """
-    Every AI visibility query row for one client, newest first. Pass
-    `platform` to filter to one (e.g. 'chatgpt', 'perplexity',
-    'google_ai_mode'). The full raw AI response and competitor
-    analysis are included so the agent can read them directly when
-    judging "is this fine or does it need improvement?".
+    Every AI visibility query row for one client, newest first. Each row
+    includes the actual raw AI answer, which brands/URLs it cited, and
+    competitor analysis. Pass `platform` to filter to one ('chatgpt',
+    'perplexity', 'google_ai_mode'). Natural questions this answers:
+    "what does ChatGPT say when asked about X?", "show me the actual AI
+    answers for client X", "which queries does X fail on?", "read me
+    X's AI responses". For summary numbers only, use
+    get_ai_visibility_summary.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -190,9 +335,11 @@ def get_ai_visibility_queries(
 @mcp.tool()
 def get_top_mentions(client: str, limit: int = 10) -> list[dict]:
     """
-    The brands/domains most often mentioned alongside this client in
-    AI responses. Useful for "who are the competitors showing up in
-    AI answers for client X?". Filters out the client's own name.
+    The brands/domains most often mentioned alongside this client in AI
+    responses — i.e. who the AI engines name instead of (or next to)
+    this client. Filters out the client's own name. Natural questions
+    this answers: "who are X's competitors in AI answers?", "which
+    brands beat X in ChatGPT?", "what comes up instead of X?".
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -219,10 +366,13 @@ def get_top_mentions(client: str, limit: int = 10) -> list[dict]:
 @mcp.tool()
 def get_shopify_report(client: str) -> dict:
     """
-    The full multi-section shopify report for one client (the
-    '-all-data.csv' export, stored generically because each client's
-    file has different sections and columns). Returns one entry per
-    section, with whatever columns and rows the source CSV had.
+    The full multi-section Shopify/web report for one client (from the
+    '-all-data.csv' upload): SEO/GSC data, sales, weekly AEO summaries —
+    each section with its own columns and rows. Returns an index when
+    there are many sections; pass get_client_profile first to see the
+    section list. Natural questions this answers: "what's X's organic
+    traffic?", "show me X's Shopify numbers", "what do the weekly
+    reports say about X?", "X's search console performance".
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -252,13 +402,13 @@ def get_shopify_report(client: str) -> dict:
 @mcp.tool()
 def ingest_file(path: str, passphrase: str = "") -> dict:
     """
-    Ingest one AI-visibility .xlsx file. Same code path as /upload.html
-    on the dashboard — runs the existing ingest pipeline (filename
-    parser, slug/date inference, upsert by client+platform+date+query_hash).
-    Returns {filename, status, client, rows} on success, or
-    {filename, status: 'skipped', reason: ...} on a bad filename.
-    The optional `passphrase` is checked only if the server was started
-    with UPLOAD_PASSPHRASE set; pass it as a string.
+    Ingest one AI-visibility .xlsx file (the export from the audit tool)
+    into the database — parses the filename for client/platform/date and
+    upserts query rows by client+platform+date+query_hash. Same code
+    path as the /upload.html dashboard form. Use this when someone says
+    "ingest this visibility file", "load the new ChatGPT audit", or
+    drops a .xlsx path. Optional passphrase checked if UPLOAD_PASSPHRASE
+    is set.
     """
     import os as _os
     expected = _os.getenv("UPLOAD_PASSPHRASE")
@@ -274,11 +424,13 @@ def ingest_file(path: str, passphrase: str = "") -> dict:
 @mcp.tool()
 def ingest_shopify_file(path: str, passphrase: str = "") -> dict:
     """
-    Ingest one Shopify report .csv file (named {client}-all-data.csv).
-    Same code path as the dashboard upload — parses === Section === blocks
-    and stores each section generically. Returns {filename, status, client,
-    sections} on success, or {filename, status: 'skipped', reason: ...} on
-    a bad filename. Optional passphrase checked if UPLOAD_PASSPHRASE is set.
+    Ingest one Shopify/web report .csv (named {client}-all-data.csv) —
+    parses '=== Section ===' blocks (GSC, sales, weekly AEO summaries)
+    and stores each section generically. Same code path as the
+    dashboard upload. Use this when someone says "ingest the Shopify
+    report", "load this all-data CSV", or drops a
+    {client}-all-data.csv path. Optional passphrase checked if
+    UPLOAD_PASSPHRASE is set.
     """
     import os as _os
     expected = _os.getenv("UPLOAD_PASSPHRASE")
@@ -294,12 +446,16 @@ def ingest_shopify_file(path: str, passphrase: str = "") -> dict:
 @mcp.tool()
 def get_client_context(client: str, context_type: str) -> dict:
     """
-    Fetch whole brand-context markdown documents for one client by
-    context_type — 'brand_voice', 'icp', 'journey_map', 'case_study',
-    etc. Returns the full markdown text of each matching doc so an LLM
-    content pipeline can pull the right context before generating posts.
-    `client` accepts id, slug, or a name fragment (same resolution as
-    the other tools).
+    Fetch whole brand-context documents for one client by context_type:
+    'brand_voice' (how the client writes/speaks), 'icp' (ideal customer
+    profile — who they target), 'journey_map', 'case_study', etc.
+    Returns the full markdown text of each matching doc. Natural
+    questions this answers: "what's Nike's brand voice?", "who is X's
+    target customer?", "what's X's ICP?", "give me X's brand guidelines
+    so I can write a post". To see every context doc at once (plus
+    everything else about the client), use get_client_profile. To find
+    docs by meaning rather than type, no tool needed — the whole doc is
+    returned here.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -326,14 +482,16 @@ def ingest_client_context(
     passphrase: str = "",
 ) -> dict:
     """
-    Store one brand-context markdown document for a client and embed it
-    for semantic search. `content` is the WHOLE markdown doc (not
-    fragmented). Upserts on (client, context_type, title) — re-ingesting
-    replaces the previous doc. Embedding uses the LOCAL sentence-
-    transformers model (all-MiniLM-L6-v2) — no API key needed. Optional
-    passphrase
-    checked if UPLOAD_PASSPHRASE is set (same gate as the other write
-    tools).
+    Store or update one brand-context document for a client and embed
+    it for similarity search. `content` is the WHOLE markdown doc (not
+    fragmented); context_type is 'brand_voice' | 'icp' | 'journey_map' |
+    'case_study' | ...; upserts on (client, context_type, title) so
+    re-ingesting replaces the previous version. Embedding is LOCAL
+    (all-MiniLM-L6-v2) — no API key. Use this when someone says "save
+    this as X's brand voice", "update X's ICP", "add this case study
+    for X". After ingesting new ICP docs, run refresh_similar_clients
+    to update the similarity graph. Optional passphrase checked if
+    UPLOAD_PASSPHRASE is set (same gate as the other write tools).
     """
     import os as _os
     expected = _os.getenv("UPLOAD_PASSPHRASE")
@@ -362,6 +520,173 @@ def ingest_client_context(
         "context_type": context_type,
         "title": result["title"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Knowledge-graph tools (kg_nodes / kg_edges — see kg.py and migrate_kg.sql)
+# Nodes mirror clients / client_contexts; edges are asserted (inferred=false)
+# or computed from ICP embedding similarity (inferred=true).
+# ---------------------------------------------------------------------------
+
+def _kg_node_for_client(cur, query: str) -> int:
+    """Resolve (or lazily create) the kg node for a client slug/name."""
+    c = _resolve_client(cur, query)
+    if not c:
+        raise ValueError(f"no client matching '{query}'")
+    cur.execute(
+        """
+        INSERT INTO kg_nodes (entity_type, entity_key, label, props)
+        VALUES ('client', 'client:' || %s, %s, '{}'::jsonb)
+        ON CONFLICT (entity_type, entity_key) DO UPDATE SET label = EXCLUDED.label
+        RETURNING id
+        """,
+        (c["slug"], c["name"]))
+    return cur.fetchone()["id"]
+
+
+@mcp.tool()
+def get_related(
+    client: str,
+    rel_type: Optional[str] = None,
+    depth: int = 1,
+    limit: int = 50,
+) -> dict:
+    """
+    "What's connected to Client X?" — traverse the knowledge graph from
+    a client's node up to `depth` hops (1-4). Returns every reachable
+    node: similar clients (via similar_to), their context docs (via
+    belongs_to), campaigns, case studies, topics. Natural questions:
+    "what's connected to X?", "what do we know around X?", "which
+    clients relate to X?". Optional rel_type filter ('similar_to',
+    'belongs_to', 'mentions', 'relates_to'). For the full client
+    picture including this, use get_client_profile.
+    """
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                node_id = _kg_node_for_client(cur, client)
+                cur.execute("SELECT entity_key FROM kg_nodes WHERE id = %s", (node_id,))
+                entity_key = cur.fetchone()["entity_key"]
+        from kg import get_related as kg_get_related
+        result = kg_get_related(
+            "client", entity_key, rel_type=rel_type, depth=depth, limit=limit)
+        result["root"]["label"] = result["root"].get("label") or client
+        return result
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def find_similar_clients(client: str, threshold: float = 0.85) -> dict:
+    """
+    "Which clients have similar ICPs / target audiences?" — cosine
+    similarity between this client's ICP embedding and every other
+    client's, computed live from the latest stored docs. Natural
+    questions: "which clients look like X?", "who else targets the
+    same audience as X?", "find clients similar to X". threshold:
+    0.85 = very similar only; lower to 0.7 for broader matches (unrelated
+    docs score ~0.4-0.5 with our local MiniLM embeddings).
+    """
+    if not 0.5 <= threshold < 1.0:
+        return {"error": "threshold must be in [0.5, 1.0)"}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                c = _resolve_client(cur, client)
+                if not c:
+                    return {"error": f"no client matching '{client}'"}
+                cur.execute(
+                    """
+                    SELECT c2.slug, c2.name, c2.id,
+                           MIN(a.embedding <=> b.embedding) AS best_dist
+                    FROM client_contexts a
+                    JOIN client_contexts b
+                      ON b.client_id <> a.client_id
+                     AND b.context_type = a.context_type
+                    JOIN clients c2 ON c2.id = b.client_id
+                    WHERE a.client_id = %s
+                      AND a.context_type = 'icp'
+                      AND a.embedding IS NOT NULL
+                      AND b.embedding IS NOT NULL
+                    GROUP BY c2.slug, c2.name, c2.id
+                    HAVING MIN(a.embedding <=> b.embedding) < %s
+                    ORDER BY best_dist
+                    """,
+                    (c["id"], 1.0 - threshold))
+                rows = cur.fetchall()
+        for r in rows:
+            r["similarity"] = round(1.0 - r.pop("best_dist"), 4)
+        return {"client": c["name"], "slug": c["slug"], "threshold": threshold,
+                "similar_clients": rows or []}
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def add_edge(
+    src_entity_key: str = "",
+    src_client: str = "",
+    dst_entity_key: str = "",
+    dst_client: str = "",
+    rel_type: str = "relates_to",
+    weight: float = 1.0,
+    props: Optional[dict] = None,
+    inferred: bool = False,
+    passphrase: str = "",
+) -> dict:
+    """
+    Assert a relationship edge in the knowledge graph — e.g. case study
+    -> client ('mentions'), campaign -> client ('relates_to'), client ->
+    topic ('mentions'), context -> client ('belongs_to'). Use when
+    someone says "link this case study to Winona", "record that campaign
+    Y belongs to X". Endpoints: pass src_client/dst_client (client
+    slug/name) OR src_entity_key/dst_entity_key (existing node key like
+    'context:2' or 'client:outdoor-vitals'). inferred=true marks the
+    edge as auto-recomputable; leave false for human-asserted facts.
+    Optional passphrase checked if UPLOAD_PASSPHRASE is set.
+    """
+    import os as _os
+    expected = _os.getenv("UPLOAD_PASSPHRASE")
+    if expected and passphrase != expected:
+        return {"status": "error", "reason": "wrong passphrase"}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                def _endpoint(client_q: str, key: str) -> int:
+                    if client_q:
+                        return _kg_node_for_client(cur, client_q)
+                    if key:
+                        cur.execute(
+                            "SELECT id FROM kg_nodes WHERE entity_key = %s", (key,))
+                        r = cur.fetchone()
+                        if not r:
+                            raise ValueError(f"no kg node with entity_key={key!r}")
+                        return r["id"]
+                    raise ValueError("each endpoint needs client or entity_key")
+                src_id = _endpoint(src_client, src_entity_key)
+                dst_id = _endpoint(dst_client, dst_entity_key)
+        from kg import add_edge
+        edge_id = add_edge(src_id, dst_id, rel_type, weight, props, inferred)
+        return {"status": "ok", "edge_id": edge_id, "rel_type": rel_type,
+                "src_id": src_id, "dst_id": dst_id}
+    except ValueError as e:
+        return {"status": "error", "reason": str(e)}
+
+
+@mcp.tool()
+def refresh_similar_clients(threshold: float = 0.85) -> dict:
+    """
+    Recompute inferred 'similar_to' edges between clients from their ICP
+    embeddings. Deletes all previously inferred similar_to edges and
+    inserts fresh ones above `threshold` (default 0.85). Run this after
+    ingesting new ICP docs (via ingest_client_context) so the graph
+    stays current. Asserted edges (inferred=false) are never touched.
+    """
+    from kg import refresh_similar_edges
+    try:
+        return refresh_similar_edges(threshold=threshold)
+    except ValueError as e:
+        return {"error": str(e)}
 
 
 if __name__ == "__main__":
