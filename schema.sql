@@ -100,9 +100,15 @@ CREATE TABLE IF NOT EXISTS shopify_report_sections (
     columns JSONB NOT NULL,
     rows JSONB NOT NULL,
     source_file TEXT,
-    ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (client_id, section_name, COALESCE(report_period, ''))
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Expression unique keys aren't allowed in a table-level UNIQUE(...)
+-- constraint - only CREATE UNIQUE INDEX supports them (see
+-- migrate_report_period.sql, which added this to the live DB by hand
+-- before this was folded into schema.sql).
+CREATE UNIQUE INDEX IF NOT EXISTS shopify_report_sections_client_section_period_key
+    ON shopify_report_sections (client_id, section_name, COALESCE(report_period, ''));
 
 CREATE INDEX IF NOT EXISTS idx_ga4_client_week ON ga4_weekly (client_id, week_start);
 CREATE INDEX IF NOT EXISTS idx_gsc_client_week ON gsc_weekly (client_id, week_start);

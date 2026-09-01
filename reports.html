@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Marketer — Weekly reports</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<script src="/vendor/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0A0A0C;
+    --surface: #131417;
+    --surface-2: #191B20;
+    --border: #212328;
+    --text: #EDEDF0;
+    --text-muted: #86868C;
+    --accent: #F0A83C;
+    --success: #3ECF8E;
+    --danger: #F0708A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    padding: 44px 24px 90px;
+  }
+  .wrap { max-width: 1020px; margin: 0 auto; }
+  header { margin-bottom: 28px; }
+  h1 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 30px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--text-muted); font-size: 14px; margin: 0 0 12px; }
+  .nav-links { display: flex; gap: 8px; }
+  .nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    text-decoration: none;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .nav-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 28px; }
+  select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 14px;
+    padding: 11px 16px;
+    border-radius: 10px;
+    min-width: 200px;
+  }
+  select:disabled { color: var(--text-muted); cursor: not-allowed; }
+  .download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 14px;
+    padding: 11px 18px;
+    border-radius: 10px;
+    text-decoration: none;
+    margin-left: auto;
+  }
+  .download-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .download-btn[aria-disabled="true"] { pointer-events: none; opacity: 0.4; }
+
+  .bento-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .bento-cell {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 26px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    min-height: 190px;
+  }
+  .ring-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+  .ring-label { position: absolute; font-family: 'IBM Plex Mono', monospace; font-weight: 600; }
+  .cell-title { font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 15px; margin: 14px 0 4px; }
+  .cell-caption { color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+  .mini-stats { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; justify-content: center; }
+  .mini-stat { font-size: 11px; color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; }
+
+  .mentions-wrap { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 8px; }
+  .mention-chip { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 6px 14px 6px 6px; }
+  .chip-avatar { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; font-family: 'IBM Plex Mono', monospace; flex-shrink: 0; }
+  .chip-name { font-size: 13px; }
+  .chip-count { font-size: 11px; color: var(--text-muted); font-family: 'IBM Plex Mono', monospace; }
+  .mentions-empty { color: var(--text-muted); font-size: 13px; margin: auto 0; }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 28px;
+    margin-bottom: 24px;
+  }
+  .panel h2 { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 500; margin: 0 0 18px; }
+  .panel-sub-heading { color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 16px; }
+  .chart-box { height: 220px; }
+
+  .all-time-row { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
+  .all-time-stat .stat-value { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; }
+  .all-time-stat .stat-label { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--text-muted); font-weight: 500; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  td { padding: 11px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr.row:hover { background: var(--surface-2); cursor: pointer; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+  .query-cell { max-width: 360px; color: var(--text); }
+  .detail { display: none; background: var(--surface-2); }
+  .detail.open { display: table-row; }
+  .detail td { color: var(--text-muted); font-size: 13px; line-height: 1.65; padding: 18px; }
+  .detail h4 { color: var(--text); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 6px; }
+  .detail section { margin-bottom: 16px; }
+  .detail section:last-child { margin-bottom: 0; }
+  .mention-pill { background: var(--surface); border: 1px solid var(--border); margin: 2px 4px 2px 0; color: var(--text-muted); }
+  .empty { color: var(--text-muted); text-align: center; padding: 70px 0; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Weekly reports</h1>
+    <p class="sub">Pick a client and a week to see that report's numbers, plus how it's trending over time.</p>
+    <div class="nav-links">
+      <a class="nav-btn" href="/index.html">← Full dashboard</a>
+    </div>
+  </header>
+  <div class="controls">
+    <select id="client-select"><option>Loading clients…</option></select>
+    <select id="week-select" disabled><option>Pick a client first</option></select>
+    <a id="download-link" class="download-btn" aria-disabled="true" href="#">Download JSON ↓</a>
+  </div>
+  <div id="content"><div class="empty">Loading…</div></div>
+</div>
+
+<script>
+const PLATFORM_COLORS = { google_ai_mode: '#4C8DFF', chatgpt: '#3ECF8E', perplexity: '#A78BFA' };
+const PLATFORM_LABELS = { google_ai_mode: 'Google AI Mode', chatgpt: 'ChatGPT', perplexity: 'Perplexity' };
+const AVATAR_PALETTE = ['#4C8DFF', '#3ECF8E', '#A78BFA', '#F0A83C', '#F0708A', '#5EC8D8'];
+
+function platformColor(p) { return PLATFORM_COLORS[p] || '#6B7280'; }
+function platformLabel(p) {
+  return PLATFORM_LABELS[p] || p.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s ?? '';
+  return div.innerHTML;
+}
+function hashColor(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  return AVATAR_PALETTE[h % AVATAR_PALETTE.length];
+}
+function initials(name) {
+  const words = name.trim().split(/\s+/);
+  return words.length === 1 ? words[0].slice(0, 2).toUpperCase() : (words[0][0] + words[1][0]).toUpperCase();
+}
+function sourceDomain(entry) {
+  const url = (entry && typeof entry === 'object') ? entry.url : entry;
+  if (!url) return '';
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.startsWith('www.') ? host.slice(4) : host;
+  } catch {
+    return '';
+  }
+}
+function uniqueDomains(sources) {
+  const set = new Set();
+  for (const s of (sources || [])) {
+    const d = sourceDomain(s);
+    if (d) set.add(d);
+  }
+  return [...set].sort();
+}
+function miniStats(s) {
+  return `<div class="mini-stats">
+    <span class="mini-stat">${s.presence_rate ?? '—'}% present</span>
+    <span class="mini-stat">${s.avg_total_brands ?? '—'} brands/query</span>
+  </div>`;
+}
+function chipsHtml(items, emptyMessage) {
+  if (!items.length) return `<p class="mentions-empty">${emptyMessage}</p>`;
+  return `<div class="mentions-wrap">${items.map(m => `
+    <div class="mention-chip">
+      <span class="chip-avatar" style="background:${hashColor(m.name)}22;color:${hashColor(m.name)}">${escapeHtml(initials(m.name))}</span>
+      <span class="chip-name">${escapeHtml(m.name)}</span>
+      <span class="chip-count">${m.count}×</span>
+    </div>`).join('')}</div>`;
+}
+
+let trendChart;
+let currentSlug = null;
+
+function ring(score, color, size, strokeWidth) {
+  const r = (size - strokeWidth) / 2 - 2;
+  const c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, score ?? 0));
+  const offset = c - (pct / 100) * c;
+  const mid = size / 2;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${strokeWidth}"/>
+    <circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="${color}" stroke-width="${strokeWidth}"
+      stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
+      transform="rotate(-90 ${mid} ${mid})"/>
+  </svg>`;
+}
+
+function platformCell(p) {
+  const color = platformColor(p.platform);
+  return `
+    <div class="bento-cell">
+      <div class="ring-wrap">
+        ${ring(p.avg_visibility_score, color, 100, 8)}
+        <span class="ring-label" style="font-size:22px;color:${color}">${p.avg_visibility_score ?? '—'}</span>
+      </div>
+      <p class="cell-title">${platformLabel(p.platform)}</p>
+      <p class="cell-caption">avg position ${p.avg_brand_position ?? '—'} · ${p.queries_tested} queries</p>
+      ${miniStats(p)}
+    </div>`;
+}
+
+async function loadClients() {
+  const res = await fetch('/api/clients');
+  const clients = await res.json();
+  const select = document.getElementById('client-select');
+  if (!clients.length) {
+    select.innerHTML = '<option>No clients yet</option>';
+    document.getElementById('content').innerHTML = '<div class="empty">No clients loaded yet.</div>';
+    return;
+  }
+  select.innerHTML = clients.map(c => `<option value="${c.slug}">${c.name}</option>`).join('');
+  select.addEventListener('change', () => loadWeeks(select.value));
+  loadWeeks(select.value);
+}
+
+async function loadWeeks(slug) {
+  currentSlug = slug;
+  const weekSelect = document.getElementById('week-select');
+  weekSelect.innerHTML = '<option>Loading…</option>';
+  weekSelect.disabled = true;
+  setDownloadLink(null);
+  // Clear the old client's rendered content immediately - otherwise it
+  // stays on screen next to the new client's name in the dropdown until
+  // this fetch resolves.
+  document.getElementById('content').innerHTML = '<div class="empty">Loading…</div>';
+
+  const res = await fetch(`/api/report-weeks?client=${encodeURIComponent(slug)}`);
+  const weeks = await res.json();
+  if (!weeks.length) {
+    weekSelect.innerHTML = '<option>No reports yet</option>';
+    document.getElementById('content').innerHTML = '<div class="empty">No AI visibility reports ingested for this client yet.</div>';
+    return;
+  }
+  weekSelect.innerHTML = weeks.map(w => `<option value="${w}">${w}</option>`).join('');
+  weekSelect.disabled = false;
+  weekSelect.onchange = () => loadWeek(slug, weekSelect.value);
+  loadWeek(slug, weeks[0]);
+}
+
+function setDownloadLink(url) {
+  const link = document.getElementById('download-link');
+  if (!url) {
+    link.setAttribute('aria-disabled', 'true');
+    link.removeAttribute('download');
+    link.href = '#';
+  } else {
+    link.removeAttribute('aria-disabled');
+    link.href = url;
+    link.setAttribute('download', url.split('/').pop());
+  }
+}
+
+async function loadWeek(slug, reportDate) {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="empty">Loading…</div>';
+  setDownloadLink(`/reports/${encodeURIComponent(slug)}/${encodeURIComponent(reportDate)}.json`);
+
+  const [reportRes, trendRes, summaryRes, sourcesRes] = await Promise.all([
+    fetch(`/reports/${encodeURIComponent(slug)}/${encodeURIComponent(reportDate)}.json`),
+    fetch(`/api/trend?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/summary?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/top-sources?client=${encodeURIComponent(slug)}`),
+  ]);
+  const report = await reportRes.json();
+  const trend = await trendRes.json();
+  const allTime = await summaryRes.json();
+  const topSources = await sourcesRes.json();
+
+  const rows = report.queries.map((q, i) => {
+    const domains = uniqueDomains(q.sources);
+    return `
+    <tr class="row" onclick="toggleDetail(${i})">
+      <td><span class="pill" style="background:${platformColor(q.platform)}22;color:${platformColor(q.platform)}">${platformLabel(q.platform)}</span></td>
+      <td class="query-cell">${escapeHtml(q.query_text)}</td>
+      <td>${q.visibility_score ?? '—'}</td>
+      <td>${q.brand_position ?? '—'} / ${q.total_brands ?? '—'}</td>
+    </tr>
+    <tr class="detail" id="detail-${i}">
+      <td colspan="4">
+        ${q.mentions && q.mentions.length ? `<section><h4>Mentioned</h4>${q.mentions.map(m => `<span class="pill mention-pill">${escapeHtml(m)}</span>`).join('')}</section>` : ''}
+        ${q.competitor_analysis ? `<section><h4>Competitor analysis</h4>${escapeHtml(q.competitor_analysis)}</section>` : ''}
+        ${domains.length ? `<section><h4>Cited sources</h4>${domains.map(d => `<span class="pill mention-pill">${escapeHtml(d)}</span>`).join('')}</section>` : ''}
+        ${q.related_queries && q.related_queries.length ? `<section><h4>Related queries</h4>${q.related_queries.map(rq => `<span class="pill mention-pill">${escapeHtml(rq)}</span>`).join('')}</section>` : ''}
+        ${q.raw_output ? `<section><h4>Raw response</h4>${escapeHtml(q.raw_output)}</section>` : ''}
+      </td>
+    </tr>
+  `;
+  }).join('');
+
+  const allTimeHtml = allTime.length
+    ? allTime.map(s => `
+        <div class="all-time-stat">
+          <div class="stat-value" style="color:${platformColor(s.platform)}">${s.avg_visibility_score ?? '—'}</div>
+          <div class="stat-label">${platformLabel(s.platform)} · all-time avg · ${s.queries_tested} queries total</div>
+        </div>`).join('')
+    : '';
+
+  content.innerHTML = `
+    <div class="bento-row">${report.platforms.map(platformCell).join('')}</div>
+    <div class="panel">
+      <h2>Trend across all weeks</h2>
+      <p class="panel-sub-heading">Visibility score by platform, ${trend.length ? new Set(trend.map(t => t.check_date)).size : 0} week(s) of data</p>
+      <div class="chart-box"><canvas id="trend-chart"></canvas></div>
+      <div class="all-time-row">${allTimeHtml}</div>
+    </div>
+    <div class="panel">
+      <h2>Most cited sources</h2>
+      <p class="panel-sub-heading">Domains the AI cited most across every answer for this client (all-time)</p>
+      ${chipsHtml(topSources, 'No sources captured yet for this client.')}
+    </div>
+    <div class="panel">
+      <h2>Queries tested this week (click a row for the full response)</h2>
+      <table>
+        <thead><tr><th>Platform</th><th>Query</th><th>Score</th><th>Position</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+
+  renderTrendChart(trend);
+}
+
+function renderTrendChart(trend) {
+  if (trendChart) { trendChart.destroy(); trendChart = null; }
+  const dates = [...new Set(trend.map(t => t.check_date))].sort();
+  const platforms = [...new Set(trend.map(t => t.platform))];
+  const byPlatform = {};
+  for (const t of trend) {
+    (byPlatform[t.platform] ??= {})[t.check_date] = t.avg_visibility_score;
+  }
+  trendChart = new Chart(document.getElementById('trend-chart'), {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: platforms.map(p => ({
+        label: platformLabel(p),
+        data: dates.map(d => byPlatform[p]?.[d] ?? null),
+        borderColor: platformColor(p),
+        backgroundColor: platformColor(p),
+        spanGaps: true,
+        tension: 0.3,
+        pointRadius: 3,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: true, labels: { color: '#EDEDF0', font: { size: 12 } } } },
+      scales: {
+        x: { grid: { color: '#212328' }, ticks: { color: '#86868C' } },
+        y: { min: 0, max: 100, grid: { color: '#212328' }, ticks: { color: '#86868C' } },
+      },
+    },
+  });
+}
+
+function toggleDetail(i) {
+  document.getElementById(`detail-${i}`).classList.toggle('open');
+}
+
+loadClients();
+</script>
+</body>
+</html>

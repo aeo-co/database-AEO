@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="/vendor/chart.umd.min.js"></script>
 <style>
   :root {
     --bg: #0A0A0C;
@@ -32,6 +32,21 @@
   header { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-bottom: 36px; flex-wrap: wrap; }
   h1 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 30px; margin: 0 0 6px; letter-spacing: -0.01em; }
   .sub { color: var(--text-muted); font-size: 14px; margin: 0; }
+  .nav-links { display: flex; gap: 8px; margin-top: 10px; }
+  .nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    text-decoration: none;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .nav-btn:hover { border-color: var(--accent); color: var(--accent); }
   select {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -70,6 +85,8 @@
   .hero-caption { color: var(--text-muted); font-size: 13px; line-height: 1.6; max-width: 230px; }
   .cell-title { font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 16px; margin: 16px 0 6px; }
   .cell-caption { color: var(--text-muted); font-size: 13px; line-height: 1.6; }
+  .mini-stats { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; justify-content: center; }
+  .mini-stat { font-size: 11px; color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; }
 
   /* Bento row 2 - chart card + mentions card */
   .bento-row2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; margin-bottom: 28px; }
@@ -114,6 +131,26 @@
   .detail section:last-child { margin-bottom: 0; }
   .mention-pill { background: var(--surface); border: 1px solid var(--border); margin: 2px 4px 2px 0; color: var(--text-muted); }
   .empty { color: var(--text-muted); text-align: center; padding: 70px 0; font-size: 14px; }
+
+  /* Shopify report sections */
+  .section-details { margin-bottom: 22px; }
+  .section-details:last-child { margin-bottom: 0; }
+  .section-details summary {
+    cursor: pointer;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 6px 0;
+    list-style: none;
+  }
+  .section-details summary::-webkit-details-marker { display: none; }
+  .section-details summary::before { content: '▸ '; color: var(--text-muted); }
+  .section-details[open] summary::before { content: '▾ '; }
+  .section-meta { color: var(--text-muted); font-size: 12px; font-weight: 400; margin-left: 6px; }
+  .table-scroll { overflow-x: auto; margin-top: 12px; }
+  .table-scroll table { min-width: 100%; }
+  .table-scroll th, .table-scroll td { white-space: nowrap; }
+  .panel-sub-heading { color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 16px; }
 </style>
 </head>
 <body>
@@ -121,7 +158,10 @@
   <header>
     <div>
       <h1>AI visibility</h1>
-      <p class="nav"><a href="/upload.html">Upload data →</a></p>
+      <div class="nav-links">
+        <a class="nav-btn" href="/reports.html">Weekly reports →</a>
+        <a class="nav-btn" href="/upload.html">Upload data →</a>
+      </div>
     </div>
     <div class="header-controls">
       <select id="client-select"><option>Loading clients…</option></select>
@@ -160,6 +200,30 @@ function hashColor(str) {
 function initials(name) {
   const words = name.trim().split(/\s+/);
   return words.length === 1 ? words[0].slice(0, 2).toUpperCase() : (words[0][0] + words[1][0]).toUpperCase();
+}
+function sourceDomain(entry) {
+  const url = (entry && typeof entry === 'object') ? entry.url : entry;
+  if (!url) return '';
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.startsWith('www.') ? host.slice(4) : host;
+  } catch {
+    return '';
+  }
+}
+function uniqueDomains(sources) {
+  const set = new Set();
+  for (const s of (sources || [])) {
+    const d = sourceDomain(s);
+    if (d) set.add(d);
+  }
+  return [...set].sort();
+}
+function miniStats(s) {
+  return `<div class="mini-stats">
+    <span class="mini-stat">${s.presence_rate ?? '—'}% present</span>
+    <span class="mini-stat">${s.avg_total_brands ?? '—'} brands/query</span>
+  </div>`;
 }
 
 let chart;
@@ -202,6 +266,7 @@ function heroCell(s) {
       </div>
       <p class="hero-title">${platformLabel(s.platform)}</p>
       <p class="hero-caption">Strongest AI channel · avg position ${s.avg_brand_position ?? '—'} · ${s.queries_tested} queries tested</p>
+      ${miniStats(s)}
     </div>`;
 }
 
@@ -215,40 +280,34 @@ function secondaryCell(s) {
       </div>
       <p class="cell-title">${platformLabel(s.platform)}</p>
       <p class="cell-caption">avg position ${s.avg_brand_position ?? '—'} · ${s.queries_tested} queries</p>
+      ${miniStats(s)}
     </div>`;
 }
 
-async function loadClient(slug) {
-  const content = document.getElementById('content');
-  content.innerHTML = '<div class="empty">Loading…</div>';
+function chipsHtml(items, emptyMessage) {
+  if (!items.length) return `<p class="mentions-empty">${emptyMessage}</p>`;
+  return `<div class="mentions-wrap">${items.map(m => `
+    <div class="mention-chip">
+      <span class="chip-avatar" style="background:${hashColor(m.name)}22;color:${hashColor(m.name)}">${escapeHtml(initials(m.name))}</span>
+      <span class="chip-name">${escapeHtml(m.name)}</span>
+      <span class="chip-count">${m.count}×</span>
+    </div>`).join('')}</div>`;
+}
 
-  const [summaryRes, queriesRes, mentionsRes] = await Promise.all([
-    fetch(`/api/summary?client=${encodeURIComponent(slug)}`),
-    fetch(`/api/queries?client=${encodeURIComponent(slug)}`),
-    fetch(`/api/mentions?client=${encodeURIComponent(slug)}`),
-  ]);
-  const summary = await summaryRes.json();
-  const queries = await queriesRes.json();
-  const mentions = await mentionsRes.json();
-
+function aiVisibilityHtml(summary, queries, mentions, topSources) {
   if (!summary.length) {
-    content.innerHTML = '<div class="empty">No data yet for this client.</div>';
-    return;
+    return `<div class="panel"><p class="empty">No AI visibility data yet for this client.</p></div>`;
   }
 
   const ranked = [...summary].sort((a, b) => (b.avg_visibility_score ?? 0) - (a.avg_visibility_score ?? 0));
   const [best, ...rest] = ranked;
 
-  const mentionsHtml = mentions.length
-    ? `<div class="mentions-wrap">${mentions.map(m => `
-        <div class="mention-chip">
-          <span class="chip-avatar" style="background:${hashColor(m.name)}22;color:${hashColor(m.name)}">${escapeHtml(initials(m.name))}</span>
-          <span class="chip-name">${escapeHtml(m.name)}</span>
-          <span class="chip-count">${m.count}×</span>
-        </div>`).join('')}</div>`
-    : `<p class="mentions-empty">No other brands showed up alongside this client yet.</p>`;
+  const mentionsHtml = chipsHtml(mentions, 'No other brands showed up alongside this client yet.');
+  const sourcesHtml = chipsHtml(topSources, 'No sources captured yet for this client.');
 
-  const rows = queries.map((q, i) => `
+  const rows = queries.map((q, i) => {
+    const domains = uniqueDomains(q.sources);
+    return `
     <tr class="row" onclick="toggleDetail(${i})">
       <td><span class="pill" style="background:${platformColor(q.platform)}22;color:${platformColor(q.platform)}">${platformLabel(q.platform)}</span></td>
       <td>${q.check_date}</td>
@@ -260,12 +319,15 @@ async function loadClient(slug) {
       <td colspan="5">
         ${q.mentions && q.mentions.length ? `<section><h4>Mentioned</h4>${q.mentions.map(m => `<span class="pill mention-pill">${escapeHtml(m)}</span>`).join('')}</section>` : ''}
         ${q.competitor_analysis ? `<section><h4>Competitor analysis</h4>${escapeHtml(q.competitor_analysis)}</section>` : ''}
+        ${domains.length ? `<section><h4>Cited sources</h4>${domains.map(d => `<span class="pill mention-pill">${escapeHtml(d)}</span>`).join('')}</section>` : ''}
+        ${q.related_queries && q.related_queries.length ? `<section><h4>Related queries</h4>${q.related_queries.map(rq => `<span class="pill mention-pill">${escapeHtml(rq)}</span>`).join('')}</section>` : ''}
         ${q.raw_output ? `<section><h4>Raw response</h4>${escapeHtml(q.raw_output)}</section>` : ''}
       </td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 
-  content.innerHTML = `
+  return `
     <div class="bento-row1">
       ${heroCell(best)}
       ${rest.map(secondaryCell).join('')}
@@ -281,6 +343,11 @@ async function loadClient(slug) {
       </div>
     </div>
     <div class="panel">
+      <h2>Most cited sources</h2>
+      <p class="panel-sub-heading">Domains the AI cited most across every answer for this client</p>
+      ${sourcesHtml}
+    </div>
+    <div class="panel">
       <h2>Queries tested (click a row for the full response)</h2>
       <table>
         <thead><tr><th>Platform</th><th>Date</th><th>Query</th><th>Score</th><th>Position</th></tr></thead>
@@ -288,8 +355,11 @@ async function loadClient(slug) {
       </table>
     </div>
   `;
+}
 
-  if (chart) chart.destroy();
+function renderChart(summary) {
+  if (chart) { chart.destroy(); chart = null; }
+  if (!summary.length) return;
   chart = new Chart(document.getElementById('chart'), {
     type: 'bar',
     data: {
@@ -312,6 +382,72 @@ async function loadClient(slug) {
       },
     },
   });
+}
+
+function sectionTable(s) {
+  const cols = s.columns || [];
+  const rows = s.rows || [];
+  return `
+    <details class="section-details" open>
+      <summary>${escapeHtml(s.section_name)}<span class="section-meta">${rows.length} row${rows.length === 1 ? '' : 's'}</span></summary>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+          <tbody>${rows.map(r => `<tr>${r.map(v => `<td>${escapeHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </details>`;
+}
+
+function shopifyReportHtml(sections) {
+  if (!sections.length) {
+    return `<div class="panel"><h2>Shopify report</h2><p class="empty">No Shopify report uploaded yet for this client.</p></div>`;
+  }
+
+  // Sections arrive grouped by report_period already (monthly first, then
+  // each weekly period in upload order) - just split on period changes.
+  const groups = [];
+  for (const s of sections) {
+    const last = groups[groups.length - 1];
+    if (!last || last.period !== s.report_period) {
+      groups.push({ period: s.report_period, sections: [] });
+    }
+    groups[groups.length - 1].sections.push(s);
+  }
+
+  return groups.map(g => `
+    <div class="panel">
+      <h2>Shopify report</h2>
+      <p class="panel-sub-heading">${g.period ? escapeHtml(g.period) : 'Monthly'}</p>
+      ${g.sections.map(sectionTable).join('')}
+    </div>
+  `).join('');
+}
+
+async function loadClient(slug) {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="empty">Loading…</div>';
+
+  const [summaryRes, queriesRes, mentionsRes, sourcesRes, shopifyRes] = await Promise.all([
+    fetch(`/api/summary?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/queries?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/mentions?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/top-sources?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/shopify-report?client=${encodeURIComponent(slug)}`),
+  ]);
+  const summary = await summaryRes.json();
+  const queries = await queriesRes.json();
+  const mentions = await mentionsRes.json();
+  const topSources = await sourcesRes.json();
+  const shopifySections = await shopifyRes.json();
+
+  if (!summary.length && !shopifySections.length) {
+    content.innerHTML = '<div class="empty">No data yet for this client.</div>';
+    return;
+  }
+
+  content.innerHTML = aiVisibilityHtml(summary, queries, mentions, topSources) + shopifyReportHtml(shopifySections);
+  renderChart(summary);
 }
 
 function toggleDetail(i) {
