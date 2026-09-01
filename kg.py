@@ -121,11 +121,11 @@ def get_related(entity_type: str, entity_key: str, rel_type: Optional[str] = Non
                     SELECT e.dst_id AS node_id, e.rel_type AS via, 1 AS hops,
                            ARRAY[e.id] AS edge_path
                     FROM kg_edges e
-                    WHERE e.src_id = %s {rel_filter}
+                    WHERE e.src_id = %s::bigint {rel_filter}
                     UNION
                     SELECT e.src_id, e.rel_type, 1, ARRAY[e.id]
                     FROM kg_edges e
-                    WHERE e.dst_id = %s {rel_filter_rev}
+                    WHERE e.dst_id = %s::bigint {rel_filter_rev}
                     UNION
                     SELECT CASE WHEN e.src_id = w.node_id THEN e.dst_id ELSE e.src_id END,
                            e.rel_type, w.hops + 1, w.edge_path || e.id
