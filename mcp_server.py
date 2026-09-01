@@ -718,6 +718,14 @@ def add_edge(
                         return _kg_node_for_client(cur, client_q)
                     if key:
                         # accept bare 'context:2' style keys OR 'type|key' pairs
+                        m = re.match(r"^(client|context|campaign|case_study|topic|custom):(.+)$", key)
+                        if m:
+                            # auto-resolve/create via the universal resolver
+                            try:
+                                return _kg_resolve_any_node(cur, m.group(1), m.group(2))
+                            except ValueError:
+                                # fall through to existing-node lookup below
+                                pass
                         cur.execute(
                             "SELECT id FROM kg_nodes WHERE entity_key = %s", (key,))
                         r = cur.fetchone()
