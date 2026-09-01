@@ -570,7 +570,7 @@ def _kg_resolve_any_node(cur, entity_type: str, entity_key: str) -> int:
         cur.execute(
             """
             INSERT INTO kg_nodes (entity_type, entity_key, label, props)
-            VALUES ('context', %s, %s, jsonb_build_object('client', %s))
+            VALUES ('context', %s, %s, jsonb_build_object('client', %s::text))
             ON CONFLICT (entity_type, entity_key)
             DO UPDATE SET label = EXCLUDED.label
             RETURNING id
