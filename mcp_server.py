@@ -599,6 +599,7 @@ def _kg_resolve_any_node(cur, entity_type: str, entity_key: str) -> int:
 def get_related(
     entity: str = "",
     entity_type: str = "client",
+    client: str = "",
     rel_type: Optional[str] = None,
     depth: int = 1,
     limit: int = 50,
@@ -610,6 +611,9 @@ def get_related(
     entity_type='client' with a client name/slug ('outdoor vitals'),
     entity_type='context' with a context doc id ('context:1' or '1'),
     or entity_type='campaign'/'case_study'/'topic'/'custom' with a key.
+    Pass the target via `entity` (+ `entity_type`); the `client` param
+    is a deprecated alias for entity + entity_type='client' kept for
+    older callers.
     Returns every reachable node (clients, their context docs,
     campaigns, case studies, topics) with the relationship type and
     hop distance. Natural questions: "what's connected to this case
@@ -618,6 +622,11 @@ def get_related(
     'relates_to', ...). For the full client picture in one call, use
     get_client_profile.
     """
+    if not entity and client:
+        entity = client
+        entity_type = "client"
+    if not entity:
+        return {"error": "pass entity (e.g. 'outdoor vitals' or 'context:1')"}
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
