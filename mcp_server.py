@@ -768,6 +768,131 @@ def refresh_similar_clients(threshold: float = 0.85) -> dict:
         return {"error": str(e)}
 
 
+# ---------------------------------------------------------------------------
+# Vector-Graph Hybrid Engine (aeo-hybrid-v1) — see insights.py and
+# triplet_extraction.py. Ontology: client / product / search_intent /
+# ai_engine / authority_site. All heavy work stays in native SQL; the
+# embedding model is lazy-loaded only inside runtime calls (OOM safety).
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_visibility_bottlenecks(client: str, gap_threshold: float = 0.3, limit: int = 5) -> dict:
+    """
+    Find a client's biggest AEO optimization bottlenecks in ONE call.
+    For every search intent linked to the client's products where AI
+    engines (ChatGPT, Perplexity, Google AI Mode) are actively citing
+    external authority sites, it checks the client's brand-context docs
+    (pgvector cosine distance) and flags intents where the client has a
+    semantic gap (distance > gap_threshold, default 0.3) — i.e. engines
+    cite competitors for queries the client's content doesn't cover well.
+    Returns the top `limit` distinct bottlenecks with the query text,
+    cited competitor domains, which engines cite them, and the gap score.
+    Natural questions: "where are we losing AI visibility?", "what
+    queries do competitors get cited for that we don't cover?", "show
+    X's optimization bottlenecks".
+    """
+    from insights import get_visibility_bottlenecks as _impl
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"error": f"no client matching '{client}'"}
+    return _impl(c["id"], gap_threshold=gap_threshold, limit=limit)
+
+
+@mcp.tool()
+def generate_content_brief(client: str, product_sku: str) -> dict:
+    """
+    Generate a hyper-targeted, AI-optimized content rewrite brief for one
+    client product (Graph-RAG). Walks the knowledge graph: locates the
+    Product node, hops 1 step to every connected SearchIntent, hops 2
+    steps to aggregate the exact AuthoritySite URLs that AI engines cite
+    for those intents, and semantically matches the client's brand-voice
+    context docs via local pgvector search. Returns a ready-to-use
+    markdown brief: target queries, competitor sites to displace, brand
+    voice, and a rewrite directive — paste it straight to Claude to draft
+    the content. Natural questions: "write a content brief for X's
+    silicone rings", "what should we rewrite to win AI citations for
+    this product?"
+    """
+    from insights import generate_content_brief as _impl
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"error": f"no client matching '{client}'"}
+    return _impl(c["id"], product_sku)
+
+
+@mcp.tool()
+def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
+    """
+    Extract Subject-Predicate-Object triplets from the ingested raw data
+    (AI visibility checks + Shopify reports + context docs) and map them
+    into the knowledge graph as product / search_intent / ai_engine /
+    authority_site nodes and product_for_intent / checks_intent /
+    intent_cites_site / has_product edges (ontology aeo-hybrid-v1).
+    Runs row-by-row with batched writes — bounded memory, safe on the
+    1GB droplet. Idempotent: re-running upserts, never duplicates.
+    Pass `client` to rebuild just that client, or leave empty for the
+    whole agency. Run this after ingesting new visibility/shopify data;
+    get_visibility_bottlenecks and generate_content_brief read the graph
+    this creates. Optional passphrase checked if UPLOAD_PASSPHRASE is set.
+    """
+    import os as _os
+    import json as _json
+    expected = _os.getenv("UPLOAD_PASSPHRASE")
+    if expected and passphrase != expected:
+        return {"status": "error", "reason": "wrong passphrase"}
+    from triplet_extraction import (
+        extract_triplets_from_visibility, store_triplets,
+        link_products_to_intents, upsert_products_from_shopify,
+    )
+    stats = {"rows_seen": 0, "triplets": 0, "clients": set(), "sql_nodes": 0, "sql_edges": 0}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                params: tuple = ()
+                sql = ("SELECT client_id, platform, query_text, urls, sources "
+                       "FROM ai_visibility_checks")
+                if client:
+                    c = _resolve_client(cur, client)
+                    if not c:
+                        return {"status": "error", "reason": f"no client matching '{client}'"}
+                    sql += " WHERE client_id = %s"
+                    params = (c["id"],)
+                cur.execute(sql, params)
+                slug_by_id = {}
+                while True:
+                    rows = cur.fetchmany(200)  # bounded batches, never the whole table
+                    if not rows:
+                        break
+                    for row in rows:
+                        stats["rows_seen"] += 1
+                        cid = row["client_id"]
+                        if cid not in slug_by_id:
+                            cur.execute("SELECT slug FROM clients WHERE id = %s", (cid,))
+                            r = cur.fetchone()
+                            if not r:
+                                continue
+                            slug_by_id[cid] = r["slug"]
+                            stats["clients"].add(r["slug"])
+                        trip = extract_triplets_from_visibility(
+                            slug_by_id[cid], row["platform"] or "unknown",
+                            row["query_text"] or "", row["urls"] or [], row["sources"] or [])
+                        if trip:
+                            res = store_triplets(trip)
+                            stats["sql_nodes"] += res["nodes"]
+                            stats["sql_edges"] += res["edges"]
+                        stats["triplets"] += len(trip)
+        link_stats = link_products_to_intents(client if client else "")
+        return {"status": "ok", "linking": link_stats,
+                **{k: (sorted(v) if isinstance(v, set) else v)
+                   for k, v in stats.items()}}
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+
+
 if __name__ == "__main__":
     import sys as _sys
     # Stdio transport for Claude Desktop (no URL needed — Claude launches

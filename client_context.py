@@ -41,6 +41,15 @@ def embed_text(text: str) -> list[float]:
     return _get_model().encode(text, normalize_embeddings=True).tolist()
 
 
+def embed_texts(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+    """Embed many strings in one batched model pass (still ONE lazy model
+    load; batches keep peak RAM bounded on the 1GB droplet)."""
+    if not texts:
+        return []
+    return _get_model().encode(texts, batch_size=batch_size,
+                               normalize_embeddings=True).tolist()
+
+
 def upsert_client_context(
     client_id: int,
     context_type: str,
