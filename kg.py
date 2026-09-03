@@ -19,7 +19,11 @@ NODE_SOURCES = {
     "context": ("client_contexts", "id", "title"),
 }
 
-VALID_NODE_TYPES = set(NODE_SOURCES) | {"campaign", "case_study", "topic", "custom"}
+VALID_NODE_TYPES = set(NODE_SOURCES) | {
+    "campaign", "case_study", "topic", "custom",
+    # aeo-hybrid-v1 ontology
+    "product", "search_intent", "ai_engine", "authority_site",
+}
 
 
 def _upsert_node(cur, entity_type: str, entity_key: str, label: str,
