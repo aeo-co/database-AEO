@@ -54,8 +54,8 @@ citations AS (
     GROUP BY i.intent_id, i.query_text, i.product_key, i.product_label,
              s.entity_key, s.label
 )
-SELECT c.product_key, c.product_label, c.intent_id, c.intent_key,
-       c.query_text, d.dist AS semantic_gap,
+SELECT c.product_key, c.product_label, c.intent_id,
+       i.intent_key, i.query_text, d.dist AS semantic_gap,
        c.site_key, c.site, c.engines
 FROM citations c
 JOIN intent_dists d ON d.intent_id = c.intent_id
