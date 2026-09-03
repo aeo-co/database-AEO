@@ -877,7 +877,7 @@ def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
                     if not slug:
                         continue
                     stats["clients"].add(slug)
-                    cur.execute(sql, (cid,) if client else ())
+                    cur.execute(sql, (cid,))
                     while True:
                         rows = cur.fetchmany(200)
                         if not rows:
