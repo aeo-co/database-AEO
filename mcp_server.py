@@ -854,12 +854,11 @@ def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
             with conn.cursor() as cur:
                 params: tuple = ()
                 sql = ("SELECT client_id, platform, query_text, urls, sources "
-                       "FROM ai_visibility_checks")
+                       "FROM ai_visibility_checks WHERE client_id = %s")
                 if client:
                     c = _resolve_client(cur, client)
                     if not c:
                         return {"status": "error", "reason": f"no client matching '{client}'"}
-                    sql += " WHERE client_id = %s"
                     params = (c["id"],)
                 cur.execute("SELECT id, slug FROM clients")
                 slug_by_id = {r["id"]: r["slug"] for r in cur.fetchall()}
