@@ -23,7 +23,7 @@ DEFAULT_GAP_THRESHOLD = 0.3  # cosine distance above this = semantic gap
 
 _BOTTLENECK_SQL = """
 WITH intents AS (
-    SELECT pi.dst_id AS intent_id,
+    SELECT pie.dst_id AS intent_id,
            n.entity_key  AS intent_key,
            n.label       AS query_text,
            pn.entity_key AS product_key, pn.label AS product_label
