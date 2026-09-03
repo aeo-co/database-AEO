@@ -861,31 +861,38 @@ def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
                         return {"status": "error", "reason": f"no client matching '{client}'"}
                     sql += " WHERE client_id = %s"
                     params = (c["id"],)
-                cur.execute(sql, params)
-                slug_by_id = {}
-                while True:
-                    rows = cur.fetchmany(200)  # bounded batches, never the whole table
-                    if not rows:
-                        break
-                    for row in rows:
-                        stats["rows_seen"] += 1
-                        cid = row["client_id"]
-                        if cid not in slug_by_id:
-                            cur.execute("SELECT slug FROM clients WHERE id = %s", (cid,))
-                            r = cur.fetchone()
-                            if not r:
-                                continue
-                            slug_by_id[cid] = r["slug"]
-                            stats["clients"].add(r["slug"])
-                        trip = extract_triplets_from_visibility(
-                            slug_by_id[cid], row["platform"] or "unknown",
-                            row["query_text"] or "", row["urls"] or [], row["sources"] or [])
-                        if trip:
-                            res = store_triplets_bulk(cur, trip)
-                            stats["sql_nodes"] += res["nodes"]
-                            stats["sql_edges"] += res["edges"]
-                        stats["triplets"] += len(trip)
-                    conn.commit()  # commit per batch; one connection total
+                cur.execute("SELECT id, slug FROM clients")
+                slug_by_id = {r["id"]: r["slug"] for r in cur.fetchall()}
+                if client:
+                    cur.execute("SELECT slug FROM clients WHERE id = %s", params)
+                    r = cur.fetchone()
+                    slug_by_id = {params[0]: r["slug"] if r else client}
+                # process ONE client at a time — each client's row set is
+                # small (~hundreds), so peak RAM stays bounded; a separate
+                # cursor is used for writes so the read cursor stays valid
+                client_ids = sorted({c for c in (params[0],) if c} or set(slug_by_id))
+                cur2 = conn.cursor()
+                for cid in client_ids:
+                    slug = slug_by_id.get(cid)
+                    if not slug:
+                        continue
+                    stats["clients"].add(slug)
+                    cur.execute(sql, (cid,) if client else ())
+                    while True:
+                        rows = cur.fetchmany(200)
+                        if not rows:
+                            break
+                        for row in rows:
+                            stats["rows_seen"] += 1
+                            trip = extract_triplets_from_visibility(
+                                slug, row["platform"] or "unknown",
+                                row["query_text"] or "", row["urls"] or [], row["sources"] or [])
+                            if trip:
+                                res = store_triplets_bulk(cur2, trip)
+                                stats["sql_nodes"] += res["nodes"]
+                                stats["sql_edges"] += res["edges"]
+                            stats["triplets"] += len(trip)
+                        conn.commit()  # commit per batch; one connection total
         link_stats = link_products_to_intents(client if client else "")
         return {"status": "ok", "linking": link_stats,
                 **{k: (sorted(v) if isinstance(v, set) else v)
