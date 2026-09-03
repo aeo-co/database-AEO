@@ -58,6 +58,7 @@ SELECT c.product_key, c.product_label, c.intent_id,
        i.intent_key, i.query_text, d.dist AS semantic_gap,
        c.site_key, c.site, c.engines
 FROM citations c
+JOIN intents i      ON i.intent_id = c.intent_id
 JOIN intent_dists d ON d.intent_id = c.intent_id
 WHERE COALESCE(d.dist, 1.0) > %(gap)s
 ORDER BY d.dist DESC
