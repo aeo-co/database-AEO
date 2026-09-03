@@ -845,7 +845,7 @@ def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
     if expected and passphrase != expected:
         return {"status": "error", "reason": "wrong passphrase"}
     from triplet_extraction import (
-        extract_triplets_from_visibility, store_triplets,
+        extract_triplets_from_visibility, store_triplets_bulk,
         link_products_to_intents, upsert_products_from_shopify,
     )
     stats = {"rows_seen": 0, "triplets": 0, "clients": set(), "sql_nodes": 0, "sql_edges": 0}
@@ -881,10 +881,11 @@ def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
                             slug_by_id[cid], row["platform"] or "unknown",
                             row["query_text"] or "", row["urls"] or [], row["sources"] or [])
                         if trip:
-                            res = store_triplets(trip)
+                            res = store_triplets_bulk(cur, trip)
                             stats["sql_nodes"] += res["nodes"]
                             stats["sql_edges"] += res["edges"]
                         stats["triplets"] += len(trip)
+                    conn.commit()  # commit per batch; one connection total
         link_stats = link_products_to_intents(client if client else "")
         return {"status": "ok", "linking": link_stats,
                 **{k: (sorted(v) if isinstance(v, set) else v)

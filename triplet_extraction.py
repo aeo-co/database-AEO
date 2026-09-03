@@ -130,24 +130,31 @@ def extract_triplets_from_visibility(client_slug: str, platform: str,
 def store_triplets(triplets: list[dict]) -> dict:
     """Batch-upsert triplet dicts ({src, rel, dst, weight?, props?}) into
     kg_nodes/kg_edges. Flushes every BATCH_FLUSH rows. Idempotent."""
-    nodes, edges = {}, []
     with get_conn() as conn:
         with conn.cursor() as cur:
-            for tri in triplets:
-                for side in ("src", "dst"):
-                    et, ek, label = tri[side]
-                    if (et, ek) not in nodes:
-                        nodes[(et, ek)] = _upsert_node(cur, et, ek, label,
-                                                       tri.get("props", {}).get(side))
-                edges.append((nodes[(tri["src"][0], tri["src"][1])],
-                              nodes[(tri["dst"][0], tri["dst"][1])],
-                              tri["rel"], float(tri.get("weight", 1.0)),
-                              json.dumps(tri.get("props", {})),
-                              tri.get("inferred", False)))
-                if len(edges) >= BATCH_FLUSH:
-                    _flush(cur, edges); edges = []
-            _flush(cur, edges)
+            out = store_triplets_bulk(cur, triplets)
         conn.commit()
+    return out
+
+
+def store_triplets_bulk(cur, triplets: list[dict]) -> dict:
+    """Same as store_triplets but reuses the caller's cursor — lets the
+    ingestion pipeline batch hundreds of rows on ONE connection."""
+    nodes, edges = {}, []
+    for tri in triplets:
+        for side in ("src", "dst"):
+            et, ek, label = tri[side]
+            if (et, ek) not in nodes:
+                nodes[(et, ek)] = _upsert_node(cur, et, ek, label,
+                                               tri.get("props", {}).get(side))
+        edges.append((nodes[(tri["src"][0], tri["src"][1])],
+                      nodes[(tri["dst"][0], tri["dst"][1])],
+                      tri["rel"], float(tri.get("weight", 1.0)),
+                      json.dumps(tri.get("props", {})),
+                      tri.get("inferred", False)))
+        if len(edges) >= BATCH_FLUSH:
+            _flush(cur, edges); edges = []
+    _flush(cur, edges)
     return {"nodes": len(nodes), "edges": len(edges)}
 
 
