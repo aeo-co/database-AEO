@@ -862,14 +862,14 @@ def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
                     params = (c["id"],)
                 cur.execute("SELECT id, slug FROM clients")
                 slug_by_id = {r["id"]: r["slug"] for r in cur.fetchall()}
-                if client:
+                if params:
                     cur.execute("SELECT slug FROM clients WHERE id = %s", params)
                     r = cur.fetchone()
                     slug_by_id = {params[0]: r["slug"] if r else client}
                 # process ONE client at a time — each client's row set is
                 # small (~hundreds), so peak RAM stays bounded; a separate
                 # cursor is used for writes so the read cursor stays valid
-                client_ids = sorted({c for c in (params[0],) if c} or set(slug_by_id))
+                client_ids = sorted({p[0] for p in (params,)} or set(slug_by_id))
                 cur2 = conn.cursor()
                 for cid in client_ids:
                     slug = slug_by_id.get(cid)
