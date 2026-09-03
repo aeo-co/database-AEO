@@ -205,7 +205,7 @@ def link_products_to_intents(client_slug: str) -> dict:
     idempotent, bounded memory."""
     created = {"products": set(), "links": 0, "intents": 0}
     with get_conn() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor() as cur, conn.cursor() as wcur:
             cur.execute("SELECT id, slug FROM clients WHERE slug = %s OR %s = ''",
                         (client_slug, client_slug))
             clients = cur.fetchall()
@@ -253,15 +253,15 @@ def link_products_to_intents(client_slug: str) -> dict:
                                  if len(t) > 3]
                         hits = sum(1 for t in terms if t in ql)
                         if terms and hits / len(terms) >= 0.5:
-                            edges = [
-                                {"src": ("product", f"product:{slug}:" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60]),
+                            pkey = f"product:{slug}:" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60]
+                            store_triplets_bulk(wcur, [
+                                {"src": ("product", pkey, name),
                                  "rel": "product_for_intent",
                                  "dst": ("search_intent", ik, q[:80])},
-                            ]
-                            res = store_triplets(edges + [
                                 {"src": ("client", "client:" + slug, ""),
                                  "rel": "has_product",
-                                 "dst": ("product", f"product:{slug}:" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60], "")}])
+                                 "dst": ("product", pkey, name)},
+                            ])
                             created["links"] += 1
                             matched = True
                     if not matched and product_nodes:
@@ -269,7 +269,7 @@ def link_products_to_intents(client_slug: str) -> dict:
                         # intents are always reachable from a product
                         name = next(iter(product_nodes))
                         pid_key = f"product:{slug}:" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60]
-                        store_triplets([
+                        store_triplets_bulk(wcur, [
                             {"src": ("product", pid_key, name),
                              "rel": "product_for_intent",
                              "dst": ("search_intent", ik, q[:80])},
@@ -278,7 +278,9 @@ def link_products_to_intents(client_slug: str) -> dict:
                              "dst": ("product", pid_key, name)},
                         ])
                         created["links"] += 1
-            conn.commit()
+                    if created["links"] % 100 == 0:
+                        conn.commit()  # periodic commit; keeps tx small
+                conn.commit()
     created["products"] = sorted(created["products"])
     return created
 
