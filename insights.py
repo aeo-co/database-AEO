@@ -119,7 +119,7 @@ def get_visibility_bottlenecks(client_id: int, gap_threshold: float = DEFAULT_GA
     for r in rows:
         b = by_intent.setdefault(r["intent_id"], {
             "product": r["product_label"], "product_key": r["product_key"],
-            "query": r["query_text"], "semantic_gap": round(float(r["semantic_gap"]), 4),
+            "query": r["query_text"], "semantic_gap": round(float(r["semantic_gap"]), 4) if r["semantic_gap"] is not None else 1.0,
             "cited_authority_sites": [], "engines": set(),
         })
         b["cited_authority_sites"].append(r["site"].removeprefix("site:"))
