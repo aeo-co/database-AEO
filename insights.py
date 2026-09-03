@@ -23,10 +23,10 @@ DEFAULT_GAP_THRESHOLD = 0.3  # cosine distance above this = semantic gap
 
 _BOTTLENECK_SQL = """
 WITH intents AS (
-    SELECT pi.intent_id,
+    SELECT pi.dst_id AS intent_id,
            n.entity_key  AS intent_key,
            n.label       AS query_text,
-           pi.product_id, pi.product_key, pi.product_label
+           pn.entity_key AS product_key, pn.label AS product_label
     FROM kg_edges pe
     JOIN kg_nodes pn  ON pn.id = pe.dst_id AND pn.entity_type = 'product'
     JOIN kg_edges pie ON pie.src_id = pn.id AND pie.rel_type = 'product_for_intent'
@@ -39,7 +39,6 @@ WITH intents AS (
 intent_dists AS (
     SELECT i.intent_id, MIN(cc.embedding <=> %(intent_vec)s::vector) AS dist
     FROM intents i
-    CROSS JOIN LATERAL (SELECT 1) _x
     LEFT JOIN client_contexts cc ON cc.client_id = %(client_id)s
     GROUP BY i.intent_id
 ),
@@ -50,7 +49,7 @@ citations AS (
     FROM intents i
     JOIN kg_edges ic  ON ic.src_id = i.intent_id AND ic.rel_type = 'intent_cites_site'
     JOIN kg_nodes s   ON s.id = ic.dst_id AND s.entity_type = 'authority_site'
-    LEFT JOIN kg_edges ce ON ce.dst_id = i.intent_id AND ce.rel_type = 'checks_intent'
+    LEFT JOIN kg_edges ce  ON ce.dst_id = i.intent_id AND ce.rel_type = 'checks_intent'
     LEFT JOIN kg_nodes eng ON eng.id = ce.src_id
     GROUP BY i.intent_id, i.query_text, i.product_key, i.product_label,
              s.entity_key, s.label
