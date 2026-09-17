@@ -4,13 +4,15 @@ import tempfile
 from collections import Counter
 from datetime import date as _date, datetime, timezone
 from pathlib import Path
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from db import get_conn
-from ingest_ai_visibility import ingest_file as ingest_ai_file
+from ingest_ai_visibility import ingest_file as ingest_ai_file, ingest_row as ingest_ai_row
 from ingest_shopify_reports import ingest_file as ingest_shopify_file
 
 app = FastAPI(title="Smart Marketer Data Hub")
@@ -300,6 +302,68 @@ def weekly_report_json(client_slug: str, report_date: str):
         "platforms": platforms,
         "queries": queries,
     }
+
+
+class AIVisibilityRow(BaseModel):
+    """
+    One AI-visibility check, ready to land in the database as soon as an
+    automation (n8n, etc.) produces it - no spreadsheet or file in
+    between. `urls`/`mentions`/`sources`/`related_queries` accept either
+    a real JSON array or a plain comma/newline-separated string, since
+    upstream automations often hand over flat text instead of a
+    structured list. `visibility_score`/`total_brands`/`brand_position`
+    accept a number or a numeric string for the same reason.
+    """
+    passphrase: str = ""
+    client: str
+    platform: str
+    check_date: _date
+    query_text: str
+    raw_output: Optional[str] = None
+    urls: Any = None
+    mentions: Any = None
+    visibility_score: Any = None
+    total_brands: Any = None
+    brand_position: Any = None
+    competitor_analysis: Optional[str] = None
+    sources: Any = None
+    related_queries: Any = None
+    source_file: str = "n8n"
+
+
+@app.post("/api/ingest/ai-visibility-row")
+def ingest_ai_visibility_row(row: AIVisibilityRow):
+    """
+    Direct-row ingestion for automations that already have one AI-
+    visibility check in hand (e.g. an n8n workflow, right after it writes
+    that same row to its Sheets report) and want it in the database
+    immediately, instead of exporting a batch of rows to .xlsx and
+    someone re-uploading it by hand. Same upsert key as every other
+    ingestion path (client + platform + check_date + query hash), so
+    re-sending a corrected row updates it in place rather than
+    duplicating it.
+    """
+    if UPLOAD_PASSPHRASE and row.passphrase != UPLOAD_PASSPHRASE:
+        raise HTTPException(status_code=401, detail="Wrong passphrase.")
+    try:
+        return ingest_ai_row(
+            client=row.client,
+            platform=row.platform,
+            check_date=row.check_date,
+            query_text=row.query_text,
+            raw_output=row.raw_output,
+            urls=row.urls,
+            mentions=row.mentions,
+            visibility_score=row.visibility_score,
+            total_brands=row.total_brands,
+            brand_position=row.brand_position,
+            competitor_analysis=row.competitor_analysis,
+            sources=row.sources,
+            related_queries=row.related_queries,
+            source_file=row.source_file,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/upload")
