@@ -102,6 +102,27 @@ def collect_mentions(row: dict) -> list:
     return [row[c].strip() for c in mention_cols if isinstance(row[c], str) and row[c].strip()]
 
 
+def coerce_list(val) -> list:
+    """Accept whatever shape a list-like field shows up in from a JSON API
+    caller (n8n, etc.): an actual list, a JSON-encoded string, or a plain
+    comma/newline-separated string (common when the upstream field is a
+    flat text cell rather than a structured array)."""
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+            return parsed if isinstance(parsed, list) else [parsed]
+        except json.JSONDecodeError:
+            return [p.strip() for p in re.split(r"[,\n]", s) if p.strip()]
+    return [val]
+
+
 def flatten(text: str) -> str:
     """Lowercase, strip all non-alphanumerics: 'Outdoor Vitals' == 'Outdoorvitals'."""
     return re.sub(r"[^a-z0-9]+", "", text.lower())
@@ -129,6 +150,132 @@ def get_or_create_client(cur, name: str) -> int:
         (name, slug),
     )
     return cur.fetchone()["id"]
+
+
+def upsert_ai_visibility_row(
+    cur,
+    client_id: int,
+    platform: str,
+    check_date,
+    query_text: str,
+    *,
+    raw_output=None,
+    urls=None,
+    mentions=None,
+    visibility_score=None,
+    total_brands=None,
+    brand_position=None,
+    competitor_analysis=None,
+    sources=None,
+    related_queries=None,
+    source_file=None,
+):
+    """The one INSERT ... ON CONFLICT every ingestion path funnels through
+    - file upload, the CLI script, and the direct-row API all call this,
+    so a row means the same thing and dedupes the same way everywhere."""
+    query_hash = hashlib.md5(query_text.strip().lower().encode()).hexdigest()
+    cur.execute(
+        """
+        INSERT INTO ai_visibility_checks (
+            client_id, platform, check_date, query_text, query_hash,
+            raw_output, urls, mentions, visibility_score, total_brands,
+            brand_position, competitor_analysis, sources, related_queries,
+            source_file
+        ) VALUES (
+            %(client_id)s, %(platform)s, %(check_date)s, %(query_text)s, %(query_hash)s,
+            %(raw_output)s, %(urls)s, %(mentions)s, %(visibility_score)s, %(total_brands)s,
+            %(brand_position)s, %(competitor_analysis)s, %(sources)s, %(related_queries)s,
+            %(source_file)s
+        )
+        ON CONFLICT (client_id, platform, check_date, query_hash) DO UPDATE SET
+            raw_output = EXCLUDED.raw_output,
+            urls = EXCLUDED.urls,
+            mentions = EXCLUDED.mentions,
+            visibility_score = EXCLUDED.visibility_score,
+            total_brands = EXCLUDED.total_brands,
+            brand_position = EXCLUDED.brand_position,
+            competitor_analysis = EXCLUDED.competitor_analysis,
+            sources = EXCLUDED.sources,
+            related_queries = EXCLUDED.related_queries,
+            source_file = EXCLUDED.source_file,
+            ingested_at = now();
+        """,
+        {
+            "client_id": client_id,
+            "platform": platform,
+            "check_date": check_date,
+            "query_text": query_text,
+            "query_hash": query_hash,
+            "raw_output": raw_output,
+            "urls": Jsonb(urls or []),
+            "mentions": Jsonb(mentions or []),
+            "visibility_score": visibility_score,
+            "total_brands": total_brands,
+            "brand_position": brand_position,
+            "competitor_analysis": competitor_analysis,
+            "sources": Jsonb(sources or []),
+            "related_queries": Jsonb(related_queries or []),
+            "source_file": source_file,
+        },
+    )
+
+
+def ingest_row(
+    client: str,
+    platform: str,
+    check_date,
+    query_text: str,
+    raw_output=None,
+    urls=None,
+    mentions=None,
+    visibility_score=None,
+    total_brands=None,
+    brand_position=None,
+    competitor_analysis=None,
+    sources=None,
+    related_queries=None,
+    source_file="api",
+) -> dict:
+    """
+    Ingest exactly one AI-visibility row from already-structured data - no
+    file involved. The entry point for automations (n8n, etc.) that have
+    a row in hand as soon as it's produced and want it in the database
+    immediately, instead of batching into a spreadsheet -> .xlsx ->
+    manual upload round trip. Same client dedup and platform
+    normalization as the file-based path; same upsert key, so re-sending
+    a corrected row updates it in place instead of duplicating.
+    """
+    query_text = (query_text or "").strip()
+    if not query_text:
+        raise ValueError("query_text is required")
+    client = (client or "").strip()
+    if not client:
+        raise ValueError("client is required")
+
+    platform_norm = normalize_platform(platform or "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            client_id = get_or_create_client(cur, client)
+            upsert_ai_visibility_row(
+                cur, client_id, platform_norm, check_date, query_text,
+                raw_output=clean_str(raw_output),
+                urls=coerce_list(urls),
+                mentions=coerce_list(mentions),
+                visibility_score=clean_num(visibility_score),
+                total_brands=clean_num(total_brands),
+                brand_position=clean_num(brand_position),
+                competitor_analysis=clean_str(competitor_analysis),
+                sources=coerce_list(sources),
+                related_queries=coerce_list(related_queries),
+                source_file=source_file,
+            )
+    return {
+        "status": "ok",
+        "client": client,
+        "client_slug": slugify(client),
+        "platform": platform_norm,
+        "check_date": str(check_date),
+    }
 
 
 def ingest_file(path: Path) -> dict:
@@ -218,52 +365,18 @@ def ingest_file(path: Path) -> dict:
                 if not query_text:
                     return
                 check_date = date_iter(row)
-                query_hash = hashlib.md5(
-                    query_text.strip().lower().encode()
-                ).hexdigest()
-                cur.execute(
-                    """
-                    INSERT INTO ai_visibility_checks (
-                        client_id, platform, check_date, query_text, query_hash,
-                        raw_output, urls, mentions, visibility_score, total_brands,
-                        brand_position, competitor_analysis, sources, related_queries,
-                        source_file
-                    ) VALUES (
-                        %(client_id)s, %(platform)s, %(check_date)s, %(query_text)s, %(query_hash)s,
-                        %(raw_output)s, %(urls)s, %(mentions)s, %(visibility_score)s, %(total_brands)s,
-                        %(brand_position)s, %(competitor_analysis)s, %(sources)s, %(related_queries)s,
-                        %(source_file)s
-                    )
-                    ON CONFLICT (client_id, platform, check_date, query_hash) DO UPDATE SET
-                        raw_output = EXCLUDED.raw_output,
-                        urls = EXCLUDED.urls,
-                        mentions = EXCLUDED.mentions,
-                        visibility_score = EXCLUDED.visibility_score,
-                        total_brands = EXCLUDED.total_brands,
-                        brand_position = EXCLUDED.brand_position,
-                        competitor_analysis = EXCLUDED.competitor_analysis,
-                        sources = EXCLUDED.sources,
-                        related_queries = EXCLUDED.related_queries,
-                        source_file = EXCLUDED.source_file,
-                        ingested_at = now();
-                    """,
-                    {
-                        "client_id": client_id,
-                        "platform": platform,
-                        "check_date": check_date,
-                        "query_text": query_text,
-                        "query_hash": query_hash,
-                        "raw_output": clean_str(row.get("Raw Output")),
-                        "urls": Jsonb(parse_json_cell(row.get("URLS"))),
-                        "mentions": Jsonb(collect_mentions(row)),
-                        "visibility_score": clean_num(row.get("Visbility score")),
-                        "total_brands": clean_num(row.get("Total Brands")),
-                        "brand_position": clean_num(row.get("Brand Postions")),
-                        "competitor_analysis": clean_str(row.get("Competitors Analysis")),
-                        "sources": Jsonb(parse_json_cell(row.get("Sources"))),
-                        "related_queries": Jsonb(parse_json_cell(row.get("Queries"))),
-                        "source_file": path.name,
-                    },
+                upsert_ai_visibility_row(
+                    cur, client_id, platform, check_date, query_text,
+                    raw_output=clean_str(row.get("Raw Output")),
+                    urls=parse_json_cell(row.get("URLS")),
+                    mentions=collect_mentions(row),
+                    visibility_score=clean_num(row.get("Visbility score")),
+                    total_brands=clean_num(row.get("Total Brands")),
+                    brand_position=clean_num(row.get("Brand Postions")),
+                    competitor_analysis=clean_str(row.get("Competitors Analysis")),
+                    sources=parse_json_cell(row.get("Sources")),
+                    related_queries=parse_json_cell(row.get("Queries")),
+                    source_file=path.name,
                 )
                 written += 1
 
