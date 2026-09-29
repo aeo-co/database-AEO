@@ -86,6 +86,51 @@ CREATE TABLE IF NOT EXISTS aeo_content_log (
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Raw comment/post research data pulled from Reddit and YouTube export
+-- tools (see ingest_reddit_csv.py / ingest_youtube_csv.py). One row per
+-- source (a Reddit post or YouTube video) in research_sources, one row
+-- per comment in research_comments - plus, for Reddit, a synthetic
+-- "post body" comment row so the post's own question and its top-level
+-- answers form one connected thread (see ingest_reddit_csv.py's
+-- docstring). Raw storage only - no question/answer extraction on top
+-- of this yet.
+CREATE TABLE IF NOT EXISTS research_sources (
+    id SERIAL PRIMARY KEY,
+    client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL CHECK (platform IN ('reddit', 'youtube')),
+    external_id TEXT NOT NULL,          -- Reddit post_id / YouTube video_id
+    url TEXT,
+    title TEXT,
+    container TEXT,                     -- Reddit subreddit; unused by YouTube
+    published_at TIMESTAMPTZ,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (platform, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS research_comments (
+    id SERIAL PRIMARY KEY,
+    source_id INT NOT NULL REFERENCES research_sources(id) ON DELETE CASCADE,
+    client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL CHECK (platform IN ('reddit', 'youtube')),
+    external_id TEXT NOT NULL,          -- comment_id, Reddit's/YouTube's own
+    parent_external_id TEXT,            -- another comment's external_id, or
+                                         -- the post's external_id for a Reddit
+                                         -- top-level reply. No FK on purpose -
+                                         -- a plain, soft reference, since a
+                                         -- source file isn't guaranteed to list
+                                         -- a parent comment before its child.
+    author TEXT,
+    author_id TEXT,
+    body TEXT NOT NULL,
+    score INT,
+    reply_count INT,                    -- YouTube only
+    posted_at TIMESTAMPTZ,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (platform, external_id)
+);
+
 -- The "-all-data.csv" report exports. These are NOT uniform across
 -- clients - each file has its own set of "=== Section Name ===" blocks,
 -- and even a section that exists for every client (e.g. Gsc Monthly) can
@@ -117,3 +162,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_visibility_client_date ON ai_visibility_checks
 CREATE INDEX IF NOT EXISTS idx_ai_visibility_platform ON ai_visibility_checks (platform);
 CREATE INDEX IF NOT EXISTS idx_aeo_client_platform ON aeo_content_log (client_id, platform);
 CREATE INDEX IF NOT EXISTS idx_shopify_sections_client ON shopify_report_sections (client_id);
+CREATE INDEX IF NOT EXISTS idx_research_sources_client ON research_sources (client_id);
+CREATE INDEX IF NOT EXISTS idx_research_comments_client ON research_comments (client_id);
+CREATE INDEX IF NOT EXISTS idx_research_comments_source ON research_comments (source_id);
+CREATE INDEX IF NOT EXISTS idx_research_comments_parent ON research_comments (platform, parent_external_id);

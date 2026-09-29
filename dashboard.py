@@ -13,7 +13,9 @@ from pydantic import BaseModel
 
 from db import get_conn
 from ingest_ai_visibility import ingest_file as ingest_ai_file, ingest_row as ingest_ai_row
+from ingest_reddit_csv import ingest_file as ingest_reddit_file
 from ingest_shopify_reports import ingest_file as ingest_shopify_file
+from ingest_youtube_csv import ingest_file as ingest_youtube_file
 
 app = FastAPI(title="Smart Marketer Data Hub")
 
@@ -26,6 +28,16 @@ UPLOAD_PASSPHRASE = os.getenv("UPLOAD_PASSPHRASE")
 def _num(val):
     """Decimal -> float, None stays None, so responses are plain JSON."""
     return float(val) if val is not None else None
+
+
+def _mention_name(entry) -> str:
+    """`mentions` entries come in two shapes depending on which
+    platform's export produced them: a plain string, or a
+    {"mention": ..., "position": N} dict (same kind of mixed-shape data
+    as `sources` - see _source_domain below)."""
+    if isinstance(entry, dict):
+        return (entry.get("mention") or "").strip()
+    return (entry or "").strip()
 
 
 @app.get("/api/clients")
@@ -88,6 +100,7 @@ def query_detail(client: str):
         r["check_date"] = r["check_date"].isoformat()
         r["visibility_score"] = round(_num(r["visibility_score"]), 1) if r["visibility_score"] is not None else None
         r["brand_position"] = round(_num(r["brand_position"]), 1) if r["brand_position"] is not None else None
+        r["mentions"] = [n for m in (r["mentions"] or []) if (n := _mention_name(m))]
     return rows
 
 
@@ -114,7 +127,7 @@ def top_mentions(client: str, limit: int = 6):
     counts = Counter()
     for r in rows:
         for mention in (r["mentions"] or []):
-            name = mention.strip()
+            name = _mention_name(mention)
             if not name or own_name in name.lower():
                 continue
             counts[name] += 1
@@ -293,6 +306,7 @@ def weekly_report_json(client_slug: str, report_date: str):
     for q in queries:
         q["visibility_score"] = round(_num(q["visibility_score"]), 1) if q["visibility_score"] is not None else None
         q["brand_position"] = round(_num(q["brand_position"]), 1) if q["brand_position"] is not None else None
+        q["mentions"] = [n for m in (q["mentions"] or []) if (n := _mention_name(m))]
 
     return {
         "client": client_row["name"],
@@ -381,19 +395,34 @@ async def upload_files(files: list[UploadFile] = File(...), passphrase: str = Fo
             dest = tmp_path / Path(f.filename).name
             with open(dest, "wb") as out:
                 shutil.copyfileobj(f.file, out)
-            # Dispatch on extension: AI visibility uses .xlsx, shopify
-            # reports use .csv (named '{client}-all-data.csv'). Anything
-            # else gets skipped with a clear reason.
+            # Dispatch on filename: AI visibility uses .xlsx; the three
+            # .csv shapes (shopify report, reddit comments, youtube
+            # comments) are told apart by their naming convention, since
+            # they share an extension. Anything else gets skipped with a
+            # clear reason.
             ext = dest.suffix.lower()
+            name_lower = dest.name.lower()
             if ext == ".xlsx":
                 results.append(ingest_ai_file(dest))
+            elif ext == ".csv" and name_lower.endswith("-reddit-comments.csv"):
+                r = ingest_reddit_file(dest)
+                r["filename"] = r.pop("file")
+                results.append(r)
+            elif ext == ".csv" and name_lower.endswith("-youtube-comments.csv"):
+                r = ingest_youtube_file(dest)
+                r["filename"] = r.pop("file")
+                results.append(r)
             elif ext == ".csv":
                 results.append(ingest_shopify_file(dest))
             else:
                 results.append({
                     "filename": dest.name,
                     "status": "skipped",
-                    "reason": f"unsupported extension '{ext}' (use .xlsx for AI visibility or .csv for shopify reports)",
+                    "reason": (
+                        f"unsupported extension '{ext}' (use .xlsx for AI visibility, "
+                        "'{client}-all-data.csv' for shopify reports, "
+                        "'{client}-reddit-comments.csv' or '{client}-youtube-comments.csv' for comments)"
+                    ),
                 })
     return results
 
