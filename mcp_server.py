@@ -97,6 +97,15 @@ def _num(val):
     return None if f != f else round(f, 1)
 
 
+def _mention_name(entry) -> str:
+    """`mentions` entries come in two shapes depending on which
+    platform's export produced them: a plain string, or a
+    {"mention": ..., "position": N} dict."""
+    if isinstance(entry, dict):
+        return (entry.get("mention") or "").strip()
+    return (entry or "").strip()
+
+
 @mcp.tool()
 def list_clients() -> list[dict]:
     """
@@ -329,6 +338,7 @@ def get_ai_visibility_queries(
         r["visibility_score"] = _num(r["visibility_score"])
         r["brand_position"] = _num(r["brand_position"])
         r["total_brands"] = int(r["total_brands"]) if r["total_brands"] is not None else None
+        r["mentions"] = [n for m in (r["mentions"] or []) if (n := _mention_name(m))]
     return rows
 
 
@@ -355,7 +365,7 @@ def get_top_mentions(client: str, limit: int = 10) -> list[dict]:
     counts: dict[str, int] = {}
     for r in rows:
         for m in (r["mentions"] or []):
-            name = (m or "").strip()
+            name = _mention_name(m)
             if not name or own in name.lower():
                 continue
             counts[name] = counts.get(name, 0) + 1

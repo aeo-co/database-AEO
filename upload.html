@@ -101,17 +101,19 @@
 <div class="wrap">
   <header>
     <h1>Upload data</h1>
-    <p class="sub">Drop AI visibility or shopify files to add them to the database.</p>
+    <p class="sub">Drop AI visibility, shopify, or comment research files to add them to the database.</p>
     <div class="nav-links">
       <a class="nav-btn" href="/">← Back to dashboard</a>
     </div>
   </header>
 
   <div class="panel">
-    <p class="upload-hint">Two file types are accepted, mixed in one batch:</p>
+    <p class="upload-hint">Four file types are accepted, mixed in one batch:</p>
     <ul class="upload-hint" style="padding-left: 20px;">
       <li><strong>AI visibility</strong> — <code>.xlsx</code> files named <code>ClientName - Platform - YYYY-MM-DD.xlsx</code> (e.g. <code>Altenew - ChatGPT - 2026-07-21.xlsx</code>). Platform is the AI tool queried: <code>ChatGPT</code>, <code>Perplexity</code>, or <code>Google AI Mode</code>.</li>
       <li><strong>Shopify report</strong> — <code>{client}-all-data.csv</code> files (e.g. <code>outdoor-vitals-all-data.csv</code>) or weekly exports named <code>{client}-weekly-DATE-to-DATE.csv</code> (e.g. <code>livingwell-weekly-2026-08-01-to-08-07.csv</code>). These are the multi-section report exports with <code>=== Section ===</code> blocks inside. Weekly files store their own period alongside the monthly report — they never overwrite it.</li>
+      <li><strong>Reddit comments</strong> — <code>{client}-reddit-comments.csv</code> files (e.g. <code>outdoor-vitals-reddit-comments.csv</code>) from the Reddit comment research tool.</li>
+      <li><strong>YouTube comments</strong> — <code>{client}-youtube-comments.csv</code> files (e.g. <code>outdoor-vitals-youtube-comments.csv</code>) from the YouTube comment research tool.</li>
     </ul>
     <div id="dropzone" class="dropzone">
       <p id="dropzone-text">Drag files here, or click to choose</p>
@@ -173,7 +175,7 @@ uploadBtn.addEventListener('click', async () => {
     }
     const results = await res.json();
     uploadResults.innerHTML = results.map(r => r.status === 'ok'
-      ? `<p class="upload-ok">✓ ${escapeHtml(r.filename)} — loaded into ${escapeHtml(r.client)}${r.report_type ? ' as ' + escapeHtml(r.report_type) + (r.report_period ? ` (${escapeHtml(r.report_period)})` : '') : ''}${r.sections ? ' — ' + r.sections + ' sections' : ''}${r.rows ? ' — ' + r.rows + ' rows' : ''}</p>`
+      ? `<p class="upload-ok">✓ ${escapeHtml(r.filename)} — loaded into ${escapeHtml(r.client)}${r.report_type ? ' as ' + escapeHtml(r.report_type) + (r.report_period ? ` (${escapeHtml(r.report_period)})` : '') : ''}${r.sections ? ' — ' + r.sections + ' sections' : ''}${r.rows ? ' — ' + r.rows + ' rows' : ''}${r.loaded !== undefined ? ' — ' + r.loaded + ' comments' : ''}</p>`
       : `<p class="upload-error">✕ ${escapeHtml(r.filename)} — ${escapeHtml(r.reason)}</p>`
     ).join('');
     queuedFiles = [];
