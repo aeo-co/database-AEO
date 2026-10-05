@@ -13,9 +13,9 @@ from pydantic import BaseModel
 
 from db import get_conn
 from ingest_ai_visibility import ingest_file as ingest_ai_file, ingest_row as ingest_ai_row
-from ingest_reddit_csv import ingest_file as ingest_reddit_file
+from ingest_reddit_csv import ingest_comment as ingest_reddit_comment, ingest_file as ingest_reddit_file
 from ingest_shopify_reports import ingest_file as ingest_shopify_file
-from ingest_youtube_csv import ingest_file as ingest_youtube_file
+from ingest_youtube_csv import ingest_comment as ingest_youtube_comment, ingest_file as ingest_youtube_file
 
 app = FastAPI(title="Smart Marketer Data Hub")
 
@@ -375,6 +375,133 @@ def ingest_ai_visibility_row(row: AIVisibilityRow):
             sources=row.sources,
             related_queries=row.related_queries,
             source_file=row.source_file,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class RedditCommentRow(BaseModel):
+    """
+    One Reddit comment, ready to land in the database as soon as an
+    automation produces it - same field names as the CSV export, so
+    there's no translation layer between what the scraping tool already
+    has and what this endpoint expects. The post_* fields are repeated
+    on every comment from the same post (exactly like every row of the
+    CSV does) - the post upsert is idempotent, so sending them every
+    time is harmless. post_created_utc/comment_created_utc are Reddit's
+    unix-seconds timestamps, numeric or numeric string.
+    """
+    passphrase: str = ""
+    client: str
+    post_id: str
+    comment_id: str
+    comment_text: str
+    post_title: Optional[str] = None
+    post_url: Optional[str] = None
+    subreddit: Optional[str] = None
+    post_author: Optional[str] = None
+    post_created_utc: Any = None
+    post_score: Any = None
+    post_num_comments: Any = None
+    post_selftext: Optional[str] = None
+    parent_comment_id: Optional[str] = None
+    comment_depth: Any = 0
+    comment_author: Optional[str] = None
+    comment_author_id: Optional[str] = None
+    comment_is_op: Any = False
+    comment_score: Any = 0
+    comment_created_utc: Any = None
+    comment_permalink: Optional[str] = None
+
+
+@app.post("/api/ingest/reddit-comment")
+def ingest_reddit_comment_row(row: RedditCommentRow):
+    """
+    Direct-comment ingestion for automations that already have one
+    Reddit comment in hand and want it in the database immediately,
+    instead of batching into a CSV for someone to re-upload by hand.
+    Same upsert key as the CSV path (platform + comment's own id), so
+    re-sending a corrected comment updates it in place.
+    """
+    if UPLOAD_PASSPHRASE and row.passphrase != UPLOAD_PASSPHRASE:
+        raise HTTPException(status_code=401, detail="Wrong passphrase.")
+    try:
+        return ingest_reddit_comment(
+            client=row.client,
+            post_id=row.post_id,
+            comment_id=row.comment_id,
+            comment_text=row.comment_text,
+            post_title=row.post_title,
+            post_url=row.post_url,
+            subreddit=row.subreddit,
+            post_author=row.post_author,
+            post_created_utc=row.post_created_utc,
+            post_score=row.post_score,
+            post_num_comments=row.post_num_comments,
+            post_selftext=row.post_selftext,
+            parent_comment_id=row.parent_comment_id,
+            comment_depth=row.comment_depth,
+            comment_author=row.comment_author,
+            comment_author_id=row.comment_author_id,
+            comment_is_op=row.comment_is_op,
+            comment_score=row.comment_score,
+            comment_created_utc=row.comment_created_utc,
+            comment_permalink=row.comment_permalink,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class YoutubeCommentRow(BaseModel):
+    """
+    One YouTube comment, ready to land in the database as soon as an
+    automation produces it - same field names as the CSV export. The
+    video_* fields are repeated on every comment from the same video
+    (exactly like every row of the CSV does) - the video upsert is
+    idempotent, so sending them every time is harmless.
+    """
+    passphrase: str = ""
+    client: str
+    video_id: str
+    comment_id: str
+    comment_text: str
+    video_title: Optional[str] = None
+    video_url: Optional[str] = None
+    video_published_at: Optional[str] = None
+    parent_comment_id: Optional[str] = None
+    comment_author: Optional[str] = None
+    author_channel_id: Optional[str] = None
+    comment_likes: Any = 0
+    comment_published_at: Optional[str] = None
+    total_reply_count: Any = 0
+
+
+@app.post("/api/ingest/youtube-comment")
+def ingest_youtube_comment_row(row: YoutubeCommentRow):
+    """
+    Direct-comment ingestion for automations that already have one
+    YouTube comment in hand and want it in the database immediately,
+    instead of batching into a CSV for someone to re-upload by hand.
+    Same upsert key as the CSV path (platform + comment's own id), so
+    re-sending a corrected comment updates it in place.
+    """
+    if UPLOAD_PASSPHRASE and row.passphrase != UPLOAD_PASSPHRASE:
+        raise HTTPException(status_code=401, detail="Wrong passphrase.")
+    try:
+        return ingest_youtube_comment(
+            client=row.client,
+            video_id=row.video_id,
+            comment_id=row.comment_id,
+            comment_text=row.comment_text,
+            video_title=row.video_title,
+            video_url=row.video_url,
+            video_published_at=row.video_published_at,
+            parent_comment_id=row.parent_comment_id,
+            comment_author=row.comment_author,
+            author_channel_id=row.author_channel_id,
+            comment_likes=row.comment_likes,
+            comment_published_at=row.comment_published_at,
+            total_reply_count=row.total_reply_count,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
