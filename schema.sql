@@ -131,6 +131,26 @@ CREATE TABLE IF NOT EXISTS research_comments (
     UNIQUE (platform, external_id)
 );
 
+-- LLM extraction pass over research_comments (see analyze_comments.py):
+-- real questions pulled out of the noise, sentiment, and raw topic tags.
+-- One row per comment, additive - never touches research_comments itself,
+-- same "source stays source of truth" philosophy as kg_nodes/kg_edges.
+-- Re-running analyze_comments.py only processes comments with no row
+-- here yet, unless told to re-analyze.
+CREATE TABLE IF NOT EXISTS research_comment_analysis (
+    id SERIAL PRIMARY KEY,
+    comment_id INT NOT NULL REFERENCES research_comments(id) ON DELETE CASCADE,
+    client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    is_question BOOLEAN NOT NULL DEFAULT false,
+    question_text TEXT,                 -- cleaned-up question, NULL if not a question
+    sentiment TEXT CHECK (sentiment IN ('positive', 'negative', 'neutral', 'mixed')),
+    sentiment_target TEXT,              -- 'client' | a named competitor | 'general' | NULL
+    topics JSONB NOT NULL DEFAULT '[]'::jsonb,
+    model TEXT NOT NULL,                -- which model produced this row
+    analyzed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (comment_id)
+);
+
 -- The "-all-data.csv" report exports. These are NOT uniform across
 -- clients - each file has its own set of "=== Section Name ===" blocks,
 -- and even a section that exists for every client (e.g. Gsc Monthly) can
@@ -166,3 +186,5 @@ CREATE INDEX IF NOT EXISTS idx_research_sources_client ON research_sources (clie
 CREATE INDEX IF NOT EXISTS idx_research_comments_client ON research_comments (client_id);
 CREATE INDEX IF NOT EXISTS idx_research_comments_source ON research_comments (source_id);
 CREATE INDEX IF NOT EXISTS idx_research_comments_parent ON research_comments (platform, parent_external_id);
+CREATE INDEX IF NOT EXISTS idx_comment_analysis_client ON research_comment_analysis (client_id);
+CREATE INDEX IF NOT EXISTS idx_comment_analysis_questions ON research_comment_analysis (client_id) WHERE is_question;
