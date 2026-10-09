@@ -34,6 +34,17 @@
   }
   .wrap { max-width: 1120px; margin: 0 auto; }
 
+  .plat-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .plat-youtube { background: #3b1f22; color: #ff6b6b; }
+  .plat-reddit { background: #1f2a3b; color: #7fb0ff; }
+  .src-link { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border); }
+  .src-link:hover { color: var(--accent); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.muted, .muted { color: var(--text-muted); }
+  .table-scroll { overflow-x: auto; }
+  .table-scroll table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .table-scroll th { text-align: left; color: var(--text-faint); font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .table-scroll td { padding: 8px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
   /* New-data banner */
   #data-banner {
     display: none; align-items: center; gap: 10px;
@@ -498,29 +509,97 @@ function shopifyReportHtml(sections) {
   `).join('');
 }
 
+/* Research panel: YouTube/Reddit sources + top comments */
+function researchHtml(stats, sources, comments) {
+  if (!stats.sources) {
+    return `<section class="block">
+      <div class="block-head"><h2>Research (YouTube &amp; Reddit)</h2></div>
+      <div class="inner"><p class="empty">No research sources ingested yet for this client.</p></div>
+    </section>`;
+  }
+
+  const platformTag = p => p === 'youtube' ? 'YouTube' : p === 'reddit' ? 'Reddit' : escapeHtml(p);
+  const srcRows = sources.map(v => `
+    <tr>
+      <td><span class="plat-tag plat-${escapeHtml(v.platform)}">${platformTag(v.platform)}</span></td>
+      <td><a class="src-link" href="${escapeHtml(v.url)}" target="_blank" rel="noopener">${escapeHtml(v.title || v.url)}</a></td>
+      <td class="num">${v.comment_count}</td>
+      <td class="muted">${v.published_at ? escapeHtml(String(v.published_at).slice(0, 10)) : '&mdash;'}</td>
+    </tr>`).join('');
+
+  const comRows = comments.map(c => {
+    const body = (c.body || '').slice(0, 240);
+    return `
+    <tr>
+      <td class="muted">${escapeHtml(c.author || 'unknown')}</td>
+      <td class="num">${c.score ?? '&mdash;'}</td>
+      <td>${escapeHtml(body)}${(c.body || '').length > 240 ? '&hellip;' : ''}</td>
+      <td class="muted">${escapeHtml(c.source_title || '')}</td>
+    </tr>`;
+  }).join('');
+
+  const plats = (stats.platforms || []).map(p => `${platformTag(p.platform)}: ${p.n}`).join(' &middot; ');
+
+  return `
+    <section class="block">
+      <div class="block-head">
+        <h2>Research (YouTube &amp; Reddit)</h2>
+        <span class="hint">${stats.sources} sources &middot; ${stats.comments} comments &middot; ${plats}</span>
+      </div>
+      <div class="inner">
+        <details class="shopify-details" open>
+          <summary><span class="s-name">Recent sources</span><span class="section-meta">latest ${sources.length}</span></summary>
+          <div class="shopify-body">
+            <div class="table-scroll"><table>
+              <thead><tr><th>Platform</th><th>Video / thread</th><th>Comments</th><th>Published</th></tr></thead>
+              <tbody>${srcRows}</tbody>
+            </table></div>
+          </div>
+        </details>
+        <details class="shopify-details">
+          <summary><span class="s-name">Top comments by upvotes</span><span class="section-meta">top ${comments.length}</span></summary>
+          <div class="shopify-body">
+            <div class="table-scroll"><table>
+              <thead><tr><th>Author</th><th>Score</th><th>Comment</th><th>On</th></tr></thead>
+              <tbody>${comRows}</tbody>
+            </table></div>
+          </div>
+        </details>
+      </div>
+    </section>`;
+}
+
 async function loadClient(slug) {
   const content = document.getElementById('content');
   content.innerHTML = '<div class="empty">Loading…</div>';
 
-  const [summaryRes, queriesRes, mentionsRes, sourcesRes, shopifyRes] = await Promise.all([
+  const [summaryRes, queriesRes, mentionsRes, sourcesRes, shopifyRes, rstatsRes, rsourcesRes, rcommentsRes] = await Promise.all([
     fetch(`/api/summary?client=${encodeURIComponent(slug)}`),
     fetch(`/api/queries?client=${encodeURIComponent(slug)}`),
     fetch(`/api/mentions?client=${encodeURIComponent(slug)}`),
     fetch(`/api/top-sources?client=${encodeURIComponent(slug)}`),
     fetch(`/api/shopify-report?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/research-stats?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/research-sources?client=${encodeURIComponent(slug)}`),
+    fetch(`/api/research-comments?client=${encodeURIComponent(slug)}`),
   ]);
   const summary = await summaryRes.json();
   const queries = await queriesRes.json();
   const mentions = await mentionsRes.json();
   const topSources = await sourcesRes.json();
   const shopifySections = await shopifyRes.json();
+  const rstats = await rstatsRes.json();
+  const rsources = await rsourcesRes.json();
+  const rcomments = await rcommentsRes.json();
 
   if (!summary.length && !shopifySections.length) {
     content.innerHTML = '<div class="empty">No data yet for this client.</div>';
     return;
   }
 
-  content.innerHTML = aiVisibilityHtml(summary, queries, mentions, topSources) + shopifyReportHtml(shopifySections);
+  content.innerHTML = aiVisibilityHtml(summary, queries, mentions, topSources)
+    + researchHtml(rstats, rsources, rcomments)
+    + shopifyReportHtml(shopifySections);
   renderChart(summary);
 }
 

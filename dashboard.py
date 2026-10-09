@@ -581,6 +581,82 @@ def latest_ingest():
             }
 
 
+@app.get("/api/research-sources")
+def research_sources(client: str, limit: int = 12):
+    """Recent YouTube/Reddit sources (videos, threads) ingested for this
+    client, with comment counts."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM clients WHERE slug = %(slug)s;", {"slug": client})
+            row = cur.fetchone()
+            if not row:
+                return []
+            cur.execute(
+                """
+                SELECT rs.id, rs.platform, rs.url, rs.title, rs.published_at, rs.fetched_at,
+                       (SELECT count(*) FROM research_comments rc WHERE rc.source_id = rs.id) AS comment_count
+                FROM research_sources rs
+                WHERE rs.client_id = %(cid)s
+                ORDER BY rs.fetched_at DESC
+                LIMIT %(lim)s
+                """,
+                {"cid": row["id"], "lim": limit},
+            )
+            return cur.fetchall()
+
+
+@app.get("/api/research-comments")
+def research_comments(client: str, limit: int = 10):
+    """Top comments by upvotes across this client's YouTube/Reddit
+    sources - the voice-of-customer view."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM clients WHERE slug = %(slug)s;", {"slug": client})
+            row = cur.fetchone()
+            if not row:
+                return []
+            cur.execute(
+                """
+                SELECT rc.author, rc.score, rc.body, rc.platform, rc.posted_at,
+                       rs.title AS source_title, rs.url AS source_url
+                FROM research_comments rc
+                JOIN research_sources rs ON rs.id = rc.source_id
+                WHERE rs.client_id = %(cid)s
+                ORDER BY rc.score DESC NULLS LAST
+                LIMIT %(lim)s
+                """,
+                {"cid": row["id"], "lim": limit},
+            )
+            return cur.fetchall()
+
+
+@app.get("/api/research-stats")
+def research_stats(client: str):
+    """Totals for the research panel header."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM clients WHERE slug = %(slug)s;", {"slug": client})
+            row = cur.fetchone()
+            if not row:
+                return {"sources": 0, "comments": 0, "platforms": []}
+            cur.execute(
+                "SELECT platform, count(*) n FROM research_sources WHERE client_id = %(cid)s GROUP BY platform",
+                {"cid": row["id"]},
+            )
+            by_platform = cur.fetchall()
+            cur.execute(
+                """SELECT count(*) FROM research_comments rc
+                   JOIN research_sources rs ON rs.id = rc.source_id
+                   WHERE rs.client_id = %(cid)s""",
+                {"cid": row["id"]},
+            )
+            return {
+                "sources": sum(r["n"] for r in by_platform),
+                "comments": cur.fetchone()["count"],
+                "platforms": by_platform,
+            }
+
+
 # Static frontend - must be mounted last so /api/* routes above take priority.
 app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="static")
 
