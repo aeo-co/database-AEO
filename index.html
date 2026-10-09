@@ -54,6 +54,14 @@
   }
   #data-banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; }
   #data-banner strong { color: var(--text); font-weight: 500; }
+  #data-banner .upload-feed { margin-top: 4px; }
+  #data-banner .upload-feed summary { cursor: pointer; color: var(--text-faint); font-size: 12px; }
+  #data-banner .upload-feed ul { margin: 6px 0 0; padding-left: 18px; }
+  #data-banner .upload-feed li { margin-bottom: 3px; font-size: 12.5px; }
+  #data-banner .upload-feed .when { color: var(--text-faint); font-size: 11px; margin-left: 6px; white-space: nowrap; }
+  #data-banner a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border); }
+  #data-banner a:hover { color: var(--accent); }
+
 
 
   /* Masthead: plain editorial, no buttons-as-pills */
@@ -609,7 +617,7 @@ function toggleDetail(i) {
 
 // --- Init ---
 
-// --- New-data banner ---
+// --- New-data banner: shows WHAT was uploaded, not just when ---
 let lastIngestSeen = null;
 
 function fmtWhen(iso) {
@@ -622,34 +630,55 @@ function fmtWhen(iso) {
   return Math.round(h / 24) + 'd ago';
 }
 
+function describeItem(it) {
+  const who = escapeHtml(it.client_name || '');
+  if (it.kind === 'research_source') {
+    const kind = it.platform === 'youtube' ? 'YouTube video' : it.platform === 'reddit' ? 'Reddit thread' : escapeHtml(it.platform);
+    const n = it.comment_count || 0;
+    return `${kind} + ${n} comment${n === 1 ? '' : 's'} for <strong>${who}</strong> &mdash; ${escapeHtml((it.title || '').slice(0, 60))}${(it.title || '').length > 60 ? '&hellip;' : ''}`;
+  }
+  if (it.kind === 'ai_visibility') {
+    return `<strong>${who}</strong> &mdash; ${it.rows} AI visibility row${it.rows === 1 ? '' : 's'} (${escapeHtml(platformLabel(it.platform))})`;
+  }
+  if (it.kind === 'shopify') {
+    return `<strong>${who}</strong> &mdash; ${it.sections} Shopify report section${it.sections === 1 ? '' : 's'}`;
+  }
+  return escapeHtml(JSON.stringify(it));
+}
+
+function feedLine(it) {
+  const title = describeItem(it);
+  if (it.url) return `<a href="${escapeHtml(it.url)}" target="_blank" rel="noopener">${title}</a>`;
+  return title;
+}
+
 async function checkIngest(initial = false) {
   try {
-    const res = await fetch('/api/latest-ingest');
+    const res = await fetch('/api/recent-uploads?minutes=120&limit=15');
     const data = await res.json();
     if (!data.latest) return;
     const t = new Date(data.latest).getTime();
-    if (lastIngestSeen === null) {
-      lastIngestSeen = t;
-    } else if (t > lastIngestSeen) {
-      lastIngestSeen = t;
-      showBanner('New data was just added to the hub.');
-    } else if (!initial) {
-      // keep existing banner if shown
-    }
-    if (t > lastIngestSeen - 30 * 60000) {
-      showBanner('Last data added ' + fmtWhen(data.latest) + '.');
-    }
+    const isNew = lastIngestSeen !== null && t > lastIngestSeen;
+    if (lastIngestSeen === null) lastIngestSeen = t;
+    else if (isNew) lastIngestSeen = t;
+
+    const items = data.items || [];
+    if (!items.length) return;
+    const latest = items[0];
+    const head = isNew
+      ? `<strong>New data just added</strong> &mdash; ${feedLine(latest)}`
+      : `Last upload ${fmtWhen(data.latest)} &mdash; ${feedLine(latest)}`;
+    const rest = items.slice(1).map(it =>
+      `<li>${feedLine(it)} <span class="when">${fmtWhen(it.at)}</span></li>`).join('');
+    const html = `${head}${items.length > 1 ? `<details class="upload-feed"><summary>+ ${items.length - 1} more recent</summary><ul>${rest}</ul></details>` : ''}`;
+    const el = document.getElementById('data-banner');
+    document.getElementById('data-banner-text').innerHTML = html;
+    el.style.display = 'flex';
   } catch (e) { /* silent */ }
 }
 
-function showBanner(text) {
-  const el = document.getElementById('data-banner');
-  document.getElementById('data-banner-text').innerHTML = text;
-  el.style.display = 'flex';
-}
-
 checkIngest(true);
-setInterval(checkIngest, 5 * 60 * 1000);
+setInterval(checkIngest, 60 * 1000);
 
 // --- Init ---
 loadClients();

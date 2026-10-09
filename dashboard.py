@@ -554,6 +554,94 @@ async def upload_files(files: list[UploadFile] = File(...), passphrase: str = Fo
     return results
 
 
+@app.get("/api/recent-uploads")
+def recent_uploads(minutes: int = 120, limit: int = 15):
+    """What actually landed recently, newest first - powers the
+    'new data' banner feed on the dashboard. Buckets research
+    (YouTube/Reddit) and visibility report activity."""
+    if minutes < 1:
+        minutes = 120
+    if minutes > 10080:
+        minutes = 10080
+    window = f"{minutes} minutes"
+    out = {"latest": None, "items": []}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Research sources + how many comments arrived for each
+            cur.execute(
+                f"""
+                SELECT rs.id, rs.platform, rs.url, rs.title, rs.fetched_at,
+                       cl.name AS client_name, cl.slug AS client_slug,
+                       (SELECT count(*) FROM research_comments rc WHERE rc.source_id = rs.id) AS comment_count
+                FROM research_sources rs
+                JOIN clients cl ON cl.id = rs.client_id
+                WHERE rs.fetched_at > now() - interval '{window}'
+                ORDER BY rs.fetched_at DESC
+                LIMIT %(lim)s
+                """,
+                {"lim": limit},
+            )
+            sources = cur.fetchall()
+            for r in sources:
+                out["items"].append({
+                    "kind": "research_source",
+                    "platform": r["platform"],
+                    "client_name": r["client_name"],
+                    "client_slug": r["client_slug"],
+                    "title": r["title"],
+                    "url": r["url"],
+                    "comment_count": r["comment_count"],
+                    "at": r["fetched_at"],
+                })
+            # New visibility-check rows in the window, grouped by client+platform
+            cur.execute(
+                f"""
+                SELECT v.platform, cl.name AS client_name, cl.slug AS client_slug,
+                       count(*) AS rows, max(v.ingested_at) AS latest
+                FROM ai_visibility_checks v
+                JOIN clients cl ON cl.id = v.client_id
+                WHERE v.ingested_at > now() - interval '{window}'
+                GROUP BY 1, 2, 3
+                ORDER BY latest DESC
+                LIMIT 10
+                """
+            )
+            for r in cur.fetchall():
+                out["items"].append({
+                    "kind": "ai_visibility",
+                    "platform": r["platform"],
+                    "client_name": r["client_name"],
+                    "client_slug": r["client_slug"],
+                    "rows": r["rows"],
+                    "at": r["latest"],
+                })
+            # New shopify report sections in the window
+            cur.execute(
+                f"""
+                SELECT cl.name AS client_name, cl.slug AS client_slug,
+                       count(*) AS sections, max(s.ingested_at) AS latest
+                FROM shopify_report_sections s
+                JOIN clients cl ON cl.id = s.client_id
+                WHERE s.ingested_at > now() - interval '{window}'
+                GROUP BY 1, 2
+                ORDER BY latest DESC
+                LIMIT 10
+                """
+            )
+            for r in cur.fetchall():
+                out["items"].append({
+                    "kind": "shopify",
+                    "client_name": r["client_name"],
+                    "client_slug": r["client_slug"],
+                    "sections": r["sections"],
+                    "at": r["latest"],
+                })
+    out["items"].sort(key=lambda x: x["at"], reverse=True)
+    out["items"] = out["items"][:limit]
+    out["latest"] = out["items"][0]["at"] if out["items"] else None
+    return out
+
+
 @app.get("/api/latest-ingest")
 def latest_ingest():
     """Most recent data ingestion per type - powers the 'new data'
