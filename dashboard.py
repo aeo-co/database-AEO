@@ -554,6 +554,33 @@ async def upload_files(files: list[UploadFile] = File(...), passphrase: str = Fo
     return results
 
 
+@app.get("/api/latest-ingest")
+def latest_ingest():
+    """Most recent data ingestion per type - powers the 'new data'
+    banner on the dashboard."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT max(ingested_at) FROM ai_visibility_checks
+                """
+            )
+            ai = cur.fetchone()["max"]
+            cur.execute("SELECT max(ingested_at) FROM shopify_report_sections")
+            shopify = cur.fetchone()["max"]
+            cur.execute("SELECT max(fetched_at) FROM research_sources")
+            sources = cur.fetchone()["max"]
+            cur.execute("SELECT max(fetched_at) FROM research_comments")
+            comments = cur.fetchone()["max"]
+            return {
+                "ai_visibility": ai,
+                "shopify": shopify,
+                "research_sources": sources,
+                "research_comments": comments,
+                "latest": max(x for x in (ai, shopify, sources, comments) if x is not None) if any((ai, shopify, sources, comments)) else None,
+            }
+
+
 # Static frontend - must be mounted last so /api/* routes above take priority.
 app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="static")
 

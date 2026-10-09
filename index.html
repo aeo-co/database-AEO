@@ -34,6 +34,17 @@
   }
   .wrap { max-width: 1120px; margin: 0 auto; }
 
+  /* New-data banner */
+  #data-banner {
+    display: none; align-items: center; gap: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
+    font-size: 13px; color: var(--text-muted);
+  }
+  #data-banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; }
+  #data-banner strong { color: var(--text); font-weight: 500; }
+
+
   /* Masthead: plain editorial, no buttons-as-pills */
   header {
     display: flex; justify-content: space-between; align-items: flex-end;
@@ -221,6 +232,7 @@
       <select id="client-select"><option>Loading clients…</option></select>
     </div>
   </header>
+  <div id="data-banner"><span class="dot"></span><span id="data-banner-text"></span></div>
   <div id="content"><div class="empty">Loading…</div></div>
 </div>
 
@@ -517,7 +529,51 @@ function toggleDetail(i) {
 }
 
 // --- Init ---
+
+// --- New-data banner ---
+let lastIngestSeen = null;
+
+function fmtWhen(iso) {
+  const d = new Date(iso);
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + ' min ago';
+  const h = Math.round(mins / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.round(h / 24) + 'd ago';
+}
+
+async function checkIngest(initial = false) {
+  try {
+    const res = await fetch('/api/latest-ingest');
+    const data = await res.json();
+    if (!data.latest) return;
+    const t = new Date(data.latest).getTime();
+    if (lastIngestSeen === null) {
+      lastIngestSeen = t;
+    } else if (t > lastIngestSeen) {
+      lastIngestSeen = t;
+      showBanner('New data was just added to the hub.');
+    } else if (!initial) {
+      // keep existing banner if shown
+    }
+    if (t > lastIngestSeen - 30 * 60000) {
+      showBanner('Last data added ' + fmtWhen(data.latest) + '.');
+    }
+  } catch (e) { /* silent */ }
+}
+
+function showBanner(text) {
+  const el = document.getElementById('data-banner');
+  document.getElementById('data-banner-text').innerHTML = text;
+  el.style.display = 'flex';
+}
+
+checkIngest(true);
+setInterval(checkIngest, 5 * 60 * 1000);
+
+// --- Init ---
 loadClients();
-</script>
+
 </body>
 </html>
