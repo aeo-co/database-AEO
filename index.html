@@ -45,14 +45,20 @@
   .table-scroll table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .table-scroll th { text-align: left; color: var(--text-faint); font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--border); }
   .table-scroll td { padding: 8px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
-  /* New-data banner */
+  /* Live-data banner: always visible, pulsing dot, refreshes itself */
   #data-banner {
     display: none; align-items: center; gap: 10px;
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
     font-size: 13px; color: var(--text-muted);
   }
-  #data-banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; }
+  #data-banner.visible { display: flex; }
+  #data-banner .new-tag {
+    background: var(--success); color: #06281B; font-size: 10px; font-weight: 700;
+    padding: 1px 6px; border-radius: 4px; letter-spacing: .04em; flex: none;
+  }
+  #data-banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   #data-banner strong { color: var(--text); font-weight: 500; }
   #data-banner .upload-feed { margin-top: 4px; }
   #data-banner .upload-feed summary { cursor: pointer; color: var(--text-faint); font-size: 12px; }
@@ -652,33 +658,36 @@ function feedLine(it) {
   return title;
 }
 
+/* LIVE DATA FEED: polls every 30s, always visible. Shows what landed
+   recently across every client; flashes 'NEW' when something fresh arrives. */
 async function checkIngest(initial = false) {
   try {
     const res = await fetch('/api/recent-uploads?minutes=120&limit=15');
     const data = await res.json();
-    if (!data.latest) return;
+    const el = document.getElementById('data-banner');
+    const text = document.getElementById('data-banner-text');
+    const items = data.items || [];
+    if (!items.length) {
+      text.innerHTML = 'Live data feed &mdash; no uploads in the last 2 hours';
+      el.classList.add('visible');
+      return;
+    }
     const t = new Date(data.latest).getTime();
     const isNew = lastIngestSeen !== null && t > lastIngestSeen;
-    if (lastIngestSeen === null) lastIngestSeen = t;
-    else if (isNew) lastIngestSeen = t;
-
-    const items = data.items || [];
-    if (!items.length) return;
+    lastIngestSeen = t;
     const latest = items[0];
     const head = isNew
-      ? `<strong>New data just added</strong> &mdash; ${feedLine(latest)}`
+      ? `<span class="new-tag">NEW</span> <strong>Just landed</strong> &mdash; ${feedLine(latest)}`
       : `Last upload ${fmtWhen(data.latest)} &mdash; ${feedLine(latest)}`;
     const rest = items.slice(1).map(it =>
       `<li>${feedLine(it)} <span class="when">${fmtWhen(it.at)}</span></li>`).join('');
-    const html = `${head}${items.length > 1 ? `<details class="upload-feed"><summary>+ ${items.length - 1} more recent</summary><ul>${rest}</ul></details>` : ''}`;
-    const el = document.getElementById('data-banner');
-    document.getElementById('data-banner-text').innerHTML = html;
-    el.style.display = 'flex';
+    text.innerHTML = `${head}${items.length > 1 ? `<details class="upload-feed"><summary>Live feed &middot; + ${items.length - 1} more recent</summary><ul>${rest}</ul></details>` : ''}`;
+    el.classList.add('visible');
   } catch (e) { /* silent */ }
 }
 
 checkIngest(true);
-setInterval(checkIngest, 60 * 1000);
+setInterval(checkIngest, 30 * 1000);
 
 // --- Init ---
 loadClients();
