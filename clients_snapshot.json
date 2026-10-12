@@ -1,0 +1,124 @@
+{
+ "generated_at": "2026-10-13",
+ "clients": [
+  {
+   "id": 64,
+   "name": "Winona",
+   "slug": "winona",
+   "manager": "Juan Bustillo",
+   "created_at": "2026-07-27 11:31:57.912532+00:00"
+  },
+  {
+   "id": 65,
+   "name": "The Swell Score",
+   "slug": "the-swell-score",
+   "manager": "Juan Bustillo",
+   "created_at": "2026-07-27 11:35:24.574778+00:00"
+  },
+  {
+   "id": 69,
+   "name": "Outdoor Vitals",
+   "slug": "outdoor-vitals",
+   "manager": "Eduardo Vargas",
+   "created_at": "2026-07-27 11:43:28.141870+00:00"
+  },
+  {
+   "id": 70,
+   "name": "Rootganic",
+   "slug": "rootganic",
+   "manager": "Eduardo Vargas",
+   "created_at": "2026-07-27 11:44:40.185323+00:00"
+  },
+  {
+   "id": 76,
+   "name": "Abogado Attorney",
+   "slug": "abogado-attorney",
+   "manager": null,
+   "created_at": "2026-08-04 20:48:26.509210+00:00"
+  },
+  {
+   "id": 78,
+   "name": "Groove Life",
+   "slug": "groove-life",
+   "manager": null,
+   "created_at": "2026-08-04 21:02:42.414661+00:00"
+  },
+  {
+   "id": 79,
+   "name": "Micro Matic",
+   "slug": "micro-matic",
+   "manager": null,
+   "created_at": "2026-08-04 21:09:54.022700+00:00"
+  },
+  {
+   "id": 80,
+   "name": "Jamie Anne",
+   "slug": "jamie-anne",
+   "manager": null,
+   "created_at": "2026-08-04 21:10:03.600386+00:00"
+  },
+  {
+   "id": 124,
+   "name": "AEO.co",
+   "slug": "aeo-co",
+   "manager": null,
+   "created_at": "2026-09-16 23:35:23.242179+00:00"
+  },
+  {
+   "id": 125,
+   "name": "Forefront Health",
+   "slug": "forefront-health",
+   "manager": null,
+   "created_at": "2026-09-17 11:46:57.980760+00:00"
+  },
+  {
+   "id": 126,
+   "name": "UV Skinz",
+   "slug": "uv-skinz",
+   "manager": null,
+   "created_at": "2026-09-17 11:55:41.951038+00:00"
+  },
+  {
+   "id": 127,
+   "name": "KJ Trading Systems",
+   "slug": "kj-trading-systems",
+   "manager": null,
+   "created_at": "2026-09-17 12:03:03.414715+00:00"
+  },
+  {
+   "id": 131,
+   "name": "Pinder Plotkin LLC",
+   "slug": "pinder-plotkin-llc",
+   "manager": null,
+   "created_at": "2026-09-22 19:31:13.681832+00:00"
+  },
+  {
+   "id": 141,
+   "name": "Guidepost Marketing",
+   "slug": "guidepost-marketing",
+   "manager": null,
+   "created_at": "2026-10-08 19:55:46.274290+00:00"
+  },
+  {
+   "id": 142,
+   "name": "Kara Valz",
+   "slug": "kara-valz",
+   "manager": null,
+   "created_at": "2026-10-08 20:01:32.788920+00:00"
+  },
+  {
+   "id": 156,
+   "name": "Living Well with Dr. Michelle",
+   "slug": "living-well-with-dr-michelle",
+   "manager": null,
+   "created_at": "2026-10-12 10:30:51.298618+00:00"
+  },
+  {
+   "id": 157,
+   "name": "BONJIL",
+   "slug": "bonjil",
+   "manager": null,
+   "created_at": "2026-10-12 14:30:51.254231+00:00"
+  }
+ ]
+}
