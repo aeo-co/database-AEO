@@ -139,8 +139,9 @@ def get_or_create_client(cur, name: str) -> int:
     cur.execute(
         "SELECT id FROM clients "
         "WHERE slug = %s OR regexp_replace(lower(name), '[^a-z0-9]', '', 'g') = %s "
+        "OR id IN (SELECT client_id FROM client_aliases WHERE alias = %s) "
         "LIMIT 1;",
-        (slug, key),
+        (slug, key, key),
     )
     row = cur.fetchone()
     if row:
