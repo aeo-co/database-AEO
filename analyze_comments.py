@@ -21,6 +21,7 @@ this.
 import argparse
 import json
 import os
+import re
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -34,6 +35,49 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 BATCH_SIZE = 25
 MIN_BODY_LEN = 8
 DELETED = {"[deleted]", "[removed]"}
+
+# Generic acknowledgments/reactions with no extractable signal on their own -
+# analyze_batch() sends each comment's body in isolation (no parent/thread
+# text), so an isolated "thanks"/"yes"/"same" can never yield a real
+# question, topic, or sentiment_target no matter how good the model is.
+# Matched post-normalization (lowercased, punctuation stripped), so
+# "Thanks!!", "Thanks.", "thanks" all match the same entry. Deliberately
+# excludes anything that could carry real signal even standalone - "why"
+# (a literal one-word question), "yes"/"no" are kept OUT on purpose only
+# where ambiguous; short agreement/gratitude tokens with no possible
+# target are the only entries here.
+BOILERPLATE = {
+    "thank you", "thanks", "thank you so much", "thanks so much", "thankyou",
+    "thanks for the feedback", "thanks for the suggestion", "thanks for sharing",
+    "thanks for watching", "thanks for the idea", "youre welcome", "you are welcome",
+    "you are so welcome", "glad it was helpful", "same", "same here", "lol", "this",
+    "me too", "nice", "awesome", "exactly", "ok", "yep", "this is the way",
+    "yes", "no",
+}
+
+# Bot/scam templates seen repeating verbatim across real data (found by
+# frequency-scanning the corpus, not guessed) - not organic engagement, and
+# left unfiltered they'd burn an LLM call AND pollute topic/sentiment output
+# with scam content unrelated to the client (e.g. "creatine" as a topic tag
+# on a client that has nothing to do with it).
+SPAM_SNIPPETS = (
+    "dango.kit.com",
+    "dr obela healing home",
+    "i'm happy i am here alive i just got cured for",
+    "dr aluda herbal medication",
+)
+
+# Reddit/platform automod messages, not a real user comment.
+AUTOMOD_PREFIXES = (
+    "thanks for posting in /r/",
+    "welcome to r/",
+)
+
+
+def _normalize(body: str) -> str:
+    b = (body or "").strip().lower()
+    b = re.sub(r"[^a-z0-9\s]", "", b)
+    return re.sub(r"\s+", " ", b).strip()
 
 _client = None
 
@@ -93,7 +137,20 @@ SYSTEM_PROMPT = (
 
 def _is_low_signal(body: str) -> bool:
     b = (body or "").strip()
-    return len(b) < MIN_BODY_LEN or b in DELETED
+    if b in DELETED:
+        return True
+    norm = _normalize(b)
+    if len(norm) < MIN_BODY_LEN:
+        # catches both genuinely short text AND anything that collapses to
+        # near-nothing once punctuation/emoji are stripped - a pure-emoji
+        # reaction can be >= 8 raw characters long but carries zero content
+        return True
+    if norm in BOILERPLATE:
+        return True
+    lower = b.lower()
+    if any(s in lower for s in SPAM_SNIPPETS) or any(lower.startswith(p) for p in AUTOMOD_PREFIXES):
+        return True
+    return False
 
 
 def fetch_unanalyzed(cur, client_id: int, limit, reanalyze: bool):
