@@ -8,3 +8,7 @@ python-multipart>=0.0.9,<1.0
 tabulate>=0.9,<1.0
 pgvector>=0.3,<0.4
 openai>=1.40,<2.0
+# mcp 2.x renamed FastMCP -> MCPServer and changed the API - mcp_server.py
+# is written against the 1.x API, so keep this pinned below 2.0.
+mcp>=1.0,<2.0
+sentence-transformers>=3.0,<7.0
