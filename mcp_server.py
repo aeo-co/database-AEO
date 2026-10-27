@@ -910,6 +910,63 @@ def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
         return {"status": "error", "reason": str(e)}
 
 
+
+@mcp.tool()
+def get_ga4_summary(client: str, limit: int = 12) -> dict:
+    """
+    GA4 (Google Analytics 4) traffic summary for one client: sessions,
+    engaged sessions, engagement rate, key events, and AI-referral
+    breakdown (chatgpt.com, gemini, claude.ai, perplexity, etc.) for
+    each ingested period (weekly or monthly), newest first. Answers
+    natural questions like "how is Winona's traffic trending?",
+    "how many sessions did Outdoor Vitals get in September?", "how
+    much traffic comes from ChatGPT?", "GA4 data for Guidepost".
+    Use list_clients first if unsure of the slug. 'client' accepts
+    slug or name (case-insensitive).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, slug FROM clients WHERE slug ILIKE %s OR name ILIKE %s",
+                (client, client),
+            )
+            cli = cur.fetchone()
+            if not cli:
+                return {"error": f"no client matching '{client}'",
+                        "hint": "call list_clients for valid slugs"}
+            cur.execute(
+                """SELECT week_start, week_end, sessions, conversions, metrics
+                   FROM ga4_weekly WHERE client_id=%s
+                   ORDER BY week_start DESC LIMIT %s""",
+                (cli["id"], max(1, min(limit, 52))),
+            )
+            rows = cur.fetchall()
+    if not rows:
+        return {"client": cli["name"], "slug": cli["slug"],
+                "periods": [],
+                "note": "no GA4 data ingested yet for this client"}
+    periods = []
+    for r in reversed(rows):  # chronological order for trends
+        m = r["metrics"] or {}
+        periods.append({
+            "period_start": r["week_start"].isoformat(),
+            "period_end": r["week_end"].isoformat(),
+            "sessions": r["sessions"],
+            "key_events": r["conversions"],
+            "engaged_sessions": m.get("engaged_sessions"),
+            "engagement_rate_pct": m.get("engagement_rate_pct"),
+            "avg_engagement_time_sec": m.get("avg_engagement_time_sec"),
+            "ai_referrals_total": m.get("ai_total"),
+            "ai_by_source": m.get("ai_by_source"),
+        })
+    total_sessions = sum(p["sessions"] or 0 for p in periods)
+    total_ke = sum(p["key_events"] or 0 for p in periods)
+    return {"client": cli["name"], "slug": cli["slug"],
+            "periods_returned": len(periods),
+            "range": [periods[0]["period_start"], periods[-1]["period_end"]],
+            "totals": {"sessions": total_sessions, "key_events": total_ke},
+            "periods": periods}
+
 if __name__ == "__main__":
     import sys as _sys
     # Stdio transport for Claude Desktop (no URL needed — Claude launches
