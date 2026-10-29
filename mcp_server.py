@@ -967,6 +967,374 @@ def get_ga4_summary(client: str, limit: int = 12) -> dict:
             "totals": {"sessions": total_sessions, "key_events": total_ke},
             "periods": periods}
 
+
+
+def _period_bounds(period: str):
+    """
+    Parse a period string into (start_date, end_date, label, kind).
+    Accepts:
+      - ISO week: '2026-W42' or '2026W42'
+      - Week-start date: '2026-10-19'
+      - Month: '2026-10'
+      - 'latest' / 'last' / 'current' -> most recent period with data
+    Returns ('__latest__', None, 'latest', None) for latest,
+    (None, None, None, None) when it cannot parse.
+    """
+    from datetime import date, timedelta
+    period = (period or "").strip()
+    if period.lower() in ("", "latest", "last", "current", "now"):
+        return "__latest__", None, "latest", None
+    m = re.fullmatch(r"(\d{4})-?W(\d{1,2})", period, re.IGNORECASE)
+    if m:
+        # ISO week -> Monday of that week
+        year, wk = int(m.group(1)), int(m.group(2))
+        d = date(year, 1, 4)  # ISO week 1 always contains Jan 4
+        d = d + timedelta(days=(wk - 1) * 7 - d.isoweekday() + 1)
+        return d, d + timedelta(days=6), f"{year}-W{wk:02d}", "week"
+    m = re.fullmatch(r"(\d{4})-(\d{2})", period)
+    if m:
+        year, mo = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12:
+            nxt = date(year + (1 if mo == 12 else 0), 1 if mo == 12 else mo + 1, 1)
+            return date(year, mo, 1), nxt - timedelta(days=1), f"{year}-{mo:02d}", "month"
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", period)
+    if m:
+        d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        d = d - timedelta(days=d.isoweekday() - 1)  # snap to that week's Monday
+        return d, d + timedelta(days=6), d.isoformat(), "week"
+    return None, None, None, None
+
+
+@mcp.tool()
+def get_weekly_ai_visibility_report(client: str, week: str = "latest") -> dict:
+    """
+    FULL weekly AI-visibility report for one client, built for Slack agents:
+    per-platform averages (visibility score, brand position, mention rate),
+    query counts, week-over-week delta vs the previous week, and the best
+    and weakest individual queries of the week. 'week' accepts an ISO week
+    label ('2026-W42'), a week-start date ('2026-10-19'), or 'latest'
+    (default = most recent week with data). Natural questions: "give me
+    Winona's weekly AI visibility report", "how did Outdoor Vitals do in
+    AI visibility last week?".
+    """
+    from datetime import timedelta
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"error": f"no client matching '{client}'",
+                        "hint": "call list_clients for valid slugs"}
+            if week.lower() in ("latest", "last", "current", "now", ""):
+                cur.execute(
+                    "SELECT max(check_date) AS latest FROM ai_visibility_checks WHERE client_id=%(cid)s",
+                    {"cid": c["id"]})
+                latest = cur.fetchone()["latest"]
+                if not latest:
+                    return {"client": c["name"], "slug": c["slug"],
+                            "note": "no AI visibility data ingested yet for this client"}
+                start = latest - timedelta(days=latest.isoweekday() - 1)
+                label = start.isoformat()
+            else:
+                start, end, label, kind = _period_bounds(week)
+                if start is None or start == "__latest__" or kind != "week":
+                    return {"error": f"could not parse week '{week}'",
+                            "hint": "use '2026-W42', '2026-10-19', or 'latest'"}
+            end = start + timedelta(days=6)
+            prev_start, prev_end = start - timedelta(days=7), start - timedelta(days=1)
+
+            def _platform_rows(w_start, w_end):
+                cur.execute(
+                    """
+                    SELECT platform, count(*) AS queries_tested,
+                           avg(visibility_score) AS avg_visibility_score,
+                           avg(brand_position) AS avg_brand_position,
+                           sum(CASE WHEN visibility_score > 0 THEN 1 ELSE 0 END) AS mentions_found,
+                           min(check_date) AS first_check, max(check_date) AS last_check
+                    FROM ai_visibility_checks
+                    WHERE client_id = %(cid)s AND check_date BETWEEN %(s)s AND %(e)s
+                    GROUP BY platform ORDER BY platform
+                    """,
+                    {"cid": c["id"], "s": w_start, "e": w_end})
+                rows = cur.fetchall()
+                for r in rows:
+                    r["avg_visibility_score"] = _num(r["avg_visibility_score"])
+                    r["avg_brand_position"] = _num(r["avg_brand_position"])
+                    r["mention_rate_pct"] = _num(100.0 * r["mentions_found"] / r["queries_tested"]) if r["queries_tested"] else None
+                    r["first_check"] = r["first_check"].isoformat()
+                    r["last_check"] = r["last_check"].isoformat()
+                return rows
+
+            platforms = _platform_rows(start, end)
+            prev_platforms = _platform_rows(prev_start, prev_end)
+            prev_by_plat = {r["platform"]: r for r in prev_platforms}
+            for r in platforms:
+                prev = prev_by_plat.get(r["platform"])
+                if prev and prev["avg_visibility_score"] is not None and r["avg_visibility_score"] is not None:
+                    r["prev_week_avg_visibility"] = prev["avg_visibility_score"]
+                    r["wow_delta"] = _num(r["avg_visibility_score"] - prev["avg_visibility_score"])
+
+            cur.execute(
+                """
+                SELECT platform, check_date, query_text, visibility_score, brand_position, total_brands
+                FROM ai_visibility_checks
+                WHERE client_id = %(cid)s AND check_date BETWEEN %(s)s AND %(e)s
+                  AND total_brands > 0
+                ORDER BY visibility_score DESC LIMIT 5
+                """, {"cid": c["id"], "s": start, "e": end})
+            best = cur.fetchall()
+            cur.execute(
+                """
+                SELECT platform, check_date, query_text, visibility_score, brand_position, total_brands
+                FROM ai_visibility_checks
+                WHERE client_id = %(cid)s AND check_date BETWEEN %(s)s AND %(e)s
+                  AND total_brands > 0
+                ORDER BY visibility_score ASC LIMIT 5
+                """, {"cid": c["id"], "s": start, "e": end})
+            worst = cur.fetchall()
+            for lst in (best, worst):
+                for r in lst:
+                    r["check_date"] = r["check_date"].isoformat()
+                    r["visibility_score"] = _num(r["visibility_score"])
+                    r["brand_position"] = _num(r["brand_position"])
+                    r["query_text"] = (r["query_text"] or "")[:200]
+
+    return {
+        "client": c["name"], "slug": c["slug"],
+        "week": label, "week_start": start.isoformat(), "week_end": end.isoformat(),
+        "platforms": platforms,
+        "total_queries": sum(r["queries_tested"] for r in platforms),
+        "top_queries": best[:5],
+        "weakest_queries": worst[:5],
+    }
+
+
+@mcp.tool()
+def get_monthly_ai_visibility_report(client: str, month: str = "latest") -> dict:
+    """
+    FULL monthly AI-visibility report for one client: per-platform monthly
+    averages (visibility score, brand position, mention rate), query volume,
+    month-over-month delta vs the previous month, and the week-by-week
+    trajectory inside the month. 'month' accepts '2026-10' style or
+    'latest' (default = most recent month with data). Natural questions:
+    "give me BONJIL's monthly AI visibility report", "how did UV Skinz
+    trend in AI visibility in September?".
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"error": f"no client matching '{client}'",
+                        "hint": "call list_clients for valid slugs"}
+            cur.execute(
+                "SELECT to_char(max(check_date), 'YYYY-MM') AS latest FROM ai_visibility_checks WHERE client_id=%(cid)s",
+                {"cid": c["id"]})
+            latest = cur.fetchone()["latest"]
+            if not latest:
+                return {"client": c["name"], "slug": c["slug"],
+                        "note": "no AI visibility data ingested yet for this client"}
+            month = (month or "").strip()
+            if month.lower() in ("latest", "last", "current", "now", ""):
+                mlabel = latest
+            elif re.fullmatch(r"\d{4}-\d{2}", month):
+                mlabel = month
+            else:
+                return {"error": f"could not parse month '{month}'",
+                        "hint": "use '2026-10' style or 'latest'"}
+            prev_label = None
+            if mlabel != latest:
+                y, mo = int(mlabel[:4]), int(mlabel[5:7])
+                prev_label = f"{y - 1 if mo == 1 else y}-{12 if mo == 1 else mo - 1:02d}"
+
+            def _month_rows(label):
+                cur.execute(
+                    """
+                    SELECT platform, count(*) AS queries_tested,
+                           avg(visibility_score) AS avg_visibility_score,
+                           avg(brand_position) AS avg_brand_position,
+                           sum(CASE WHEN visibility_score > 0 THEN 1 ELSE 0 END) AS mentions_found,
+                           min(check_date) AS first_check, max(check_date) AS last_check
+                    FROM ai_visibility_checks
+                    WHERE client_id = %(cid)s AND to_char(check_date, 'YYYY-MM') = %(m)s
+                    GROUP BY platform ORDER BY platform
+                    """, {"cid": c["id"], "m": label})
+                rows = cur.fetchall()
+                for r in rows:
+                    r["avg_visibility_score"] = _num(r["avg_visibility_score"])
+                    r["avg_brand_position"] = _num(r["avg_brand_position"])
+                    r["mention_rate_pct"] = _num(100.0 * r["mentions_found"] / r["queries_tested"]) if r["queries_tested"] else None
+                    r["first_check"] = r["first_check"].isoformat()
+                    r["last_check"] = r["last_check"].isoformat()
+                return rows
+
+            platforms = _month_rows(mlabel)
+            prev_platforms = _month_rows(prev_label) if prev_label else []
+            prev_by_plat = {r["platform"]: r for r in prev_platforms}
+            for r in platforms:
+                prev = prev_by_plat.get(r["platform"])
+                if prev and prev["avg_visibility_score"] is not None and r["avg_visibility_score"] is not None:
+                    r["prev_month_avg_visibility"] = prev["avg_visibility_score"]
+                    r["mom_delta"] = _num(r["avg_visibility_score"] - prev["avg_visibility_score"])
+
+            cur.execute(
+                """
+                SELECT date_trunc('week', check_date)::date AS week_start,
+                       platform, count(*) AS queries,
+                       avg(visibility_score) AS avg_visibility_score
+                FROM ai_visibility_checks
+                WHERE client_id = %(cid)s AND to_char(check_date, 'YYYY-MM') = %(m)s
+                GROUP BY 1, 2 ORDER BY 1, 2
+                """, {"cid": c["id"], "m": mlabel})
+            weeks = cur.fetchall()
+            for r in weeks:
+                r["week_start"] = r["week_start"].isoformat()
+                r["avg_visibility_score"] = _num(r["avg_visibility_score"])
+
+    return {
+        "client": c["name"], "slug": c["slug"], "month": mlabel,
+        "platforms": platforms,
+        "total_queries": sum(r["queries_tested"] for r in platforms),
+        "weekly_trajectory": weeks,
+    }
+
+
+@mcp.tool()
+def get_weekly_shopify_report(client: str, week: str = "latest") -> dict:
+    """
+    FULL weekly Shopify/e-commerce report for one client: orders, total
+    sales (USD), net items sold, AOV, prior-year comparison, per-product
+    breakdown, and data caveats — straight from the weekly pull ingest.
+    'week' accepts a week-start date ('2026-10-19'), an ISO week label
+    ('2026-W42'), or 'latest' (default = most recent week with data).
+    Natural questions: "give me Groove Life's weekly Shopify report",
+    "Outdoor Vitals sales last week".
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"error": f"no client matching '{client}'",
+                        "hint": "call list_clients for valid slugs"}
+            if week.lower() in ("latest", "last", "current", "now", ""):
+                cur.execute(
+                    """SELECT week_start, week_end, orders, revenue, aov, metrics
+                       FROM shopify_weekly WHERE client_id=%(cid)s
+                       ORDER BY week_start DESC LIMIT 1""",
+                    {"cid": c["id"]})
+                rows = cur.fetchall()
+            else:
+                start, end, label, kind = _period_bounds(week)
+                if start is None or start == "__latest__" or kind != "week":
+                    return {"error": f"could not parse week '{week}'",
+                            "hint": "use '2026-10-19', '2026-W42', or 'latest'"}
+                cur.execute(
+                    """SELECT week_start, week_end, orders, revenue, aov, metrics
+                       FROM shopify_weekly
+                       WHERE client_id=%(cid)s AND week_start=%(ws)s""",
+                    {"cid": c["id"], "ws": start})
+                rows = cur.fetchall()
+            if not rows:
+                return {"client": c["name"], "slug": c["slug"],
+                        "note": "no weekly Shopify row for this exact week for this client",
+                        "hint": "weekly rows are keyed by their Monday week_start; try a nearby Monday"}
+            r = rows[0]
+            m = r["metrics"] or {}
+    return {
+        "client": c["name"], "slug": c["slug"],
+        "week_start": r["week_start"].isoformat(),
+        "week_end": r["week_end"].isoformat(),
+        "orders": r["orders"],
+        "revenue_usd": float(r["revenue"]) if r["revenue"] is not None else None,
+        "aov_usd": float(r["aov"]) if r["aov"] is not None else None,
+        "net_items_sold": m.get("net_items_sold"),
+        "total_sales_usd": m.get("total_sales_usd"),
+        "total_sales_ex_exclusions_usd": m.get("total_sales_ex_exclusions_usd"),
+        "excluded_artifact_sales_usd": m.get("excluded_artifact_sales_usd"),
+        "prior_year": m.get("prior_year"),
+        "products": m.get("products"),
+        "caveats": m.get("caveats"),
+        "no_shopify": m.get("no_shopify", False),
+    }
+
+
+@mcp.tool()
+def get_monthly_shopify_report(client: str, month: str = "latest") -> dict:
+    """
+    FULL monthly Shopify/e-commerce report for one client: month total
+    orders, revenue, AOV, net items sold, the per-week breakdown inside
+    the month, plus the full monthly report sections (SEO/GSC, GA4,
+    AI snapshot, sales) from the '-all-data.csv' upload when they exist
+    for that month. 'month' accepts '2026-10' style or 'latest' (default
+    = most recent month with data). Natural questions: "give me Winona's
+    monthly Shopify report", "The Swell Score September sales".
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            c = _resolve_client(cur, client)
+            if not c:
+                return {"error": f"no client matching '{client}'",
+                        "hint": "call list_clients for valid slugs"}
+            cur.execute(
+                "SELECT to_char(max(week_start), 'YYYY-MM') AS latest FROM shopify_weekly WHERE client_id=%(cid)s",
+                {"cid": c["id"]})
+            latest = cur.fetchone()["latest"]
+            if not latest:
+                return {"client": c["name"], "slug": c["slug"],
+                        "note": "no Shopify data ingested yet for this client"}
+            month = (month or "").strip()
+            if month.lower() in ("latest", "last", "current", "now", ""):
+                mlabel = latest
+            elif re.fullmatch(r"\d{4}-\d{2}", month):
+                mlabel = month
+            else:
+                return {"error": f"could not parse month '{month}'",
+                        "hint": "use '2026-10' style or 'latest'"}
+
+            cur.execute(
+                """SELECT week_start, week_end, orders, revenue, aov, metrics
+                   FROM shopify_weekly
+                   WHERE client_id=%(cid)s AND to_char(week_start, 'YYYY-MM')=%(m)s
+                   ORDER BY week_start""",
+                {"cid": c["id"], "m": mlabel})
+            rows = cur.fetchall()
+            weeks = []
+            totals = {"orders": 0, "revenue_usd": 0.0, "net_items_sold": 0}
+            for r in rows:
+                m = r["metrics"] or {}
+                weeks.append({
+                    "week_start": r["week_start"].isoformat(),
+                    "week_end": r["week_end"].isoformat(),
+                    "orders": r["orders"],
+                    "revenue_usd": float(r["revenue"]) if r["revenue"] is not None else None,
+                    "aov_usd": float(r["aov"]) if r["aov"] is not None else None,
+                    "net_items_sold": m.get("net_items_sold"),
+                    "total_sales_usd": m.get("total_sales_usd"),
+                })
+                if r["orders"]:
+                    totals["orders"] += r["orders"]
+                if r["revenue"]:
+                    totals["revenue_usd"] += float(r["revenue"])
+                if m.get("net_items_sold"):
+                    totals["net_items_sold"] += m["net_items_sold"]
+            # full monthly report sections for this period (GSC/GA4/AI snapshot/sales)
+            cur.execute(
+                """SELECT section_name, columns, rows
+                   FROM shopify_report_sections
+                   WHERE client_id=%(cid)s AND report_period=%(m)s
+                   ORDER BY section_name""",
+                {"cid": c["id"], "m": mlabel})
+            sections = cur.fetchall()
+            for s in sections:
+                s["rows"] = s["rows"][:50]  # cap per-section rows for Slack-sized payloads
+
+    return {
+        "client": c["name"], "slug": c["slug"], "month": mlabel,
+        "month_totals": totals if rows else None,
+        "weeks": weeks,
+        "monthly_report_sections": sections,
+        "sections_note": "rows capped at 50 per section; call get_shopify_report for uncapped" if sections else None,
+    }
+
+
 if __name__ == "__main__":
     import sys as _sys
     # Stdio transport for Claude Desktop (no URL needed — Claude launches
