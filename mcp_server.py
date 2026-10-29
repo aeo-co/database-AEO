@@ -64,6 +64,8 @@ def _resolve_client(cur, query: str) -> Optional[dict]:
     "outdoor vitals" or "OutdoorVitals" both find the row whose name is
     "Outdoorvitals" (the README's documented flattened-name case).
     """
+    if not isinstance(query, str):
+        query = str(query)
     slug = slugify(query)
     cur.execute(
         "SELECT id, name, slug FROM clients WHERE slug = %(slug)s;",
@@ -109,7 +111,7 @@ def _mention_name(entry) -> str:
 @mcp.tool()
 def list_clients() -> list[dict]:
     """
-    List every client in the database (name, slug, id, manager). Call
+    List every client in the database (name, slug, id, manager, seo_manager). Call
     this first whenever a question mentions a client by name and you
     need their slug for other tools. Natural questions this answers:
     "which clients do we have?", "who are our clients?", "list clients",
@@ -120,7 +122,7 @@ def list_clients() -> list[dict]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, name, slug, manager, created_at FROM clients ORDER BY name;"
+                "SELECT id, name, slug, manager, seo_manager, created_at FROM clients ORDER BY name;"
             )
             rows = cur.fetchall()
     for r in rows:
@@ -156,7 +158,7 @@ def get_client_profile(client: str) -> dict:
 
             # --- basic info
             cur.execute(
-                "SELECT id, name, slug, manager, created_at FROM clients WHERE id = %s;",
+                "SELECT id, name, slug, manager, seo_manager, created_at FROM clients WHERE id = %s;",
                 (cid,))
             basic = cur.fetchone()
             basic["created_at"] = basic["created_at"].isoformat()
@@ -186,7 +188,7 @@ def get_client_profile(client: str) -> dict:
             counts: dict[str, int] = {}
             for r in cur.fetchall():
                 for m in (r["mentions"] or []):
-                    name = (m or "").strip()
+                    name = _mention_name(m)
                     if not name or own in name.lower():
                         continue
                     counts[name] = counts.get(name, 0) + 1
