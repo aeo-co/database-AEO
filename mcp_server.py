@@ -1335,6 +1335,90 @@ def get_monthly_shopify_report(client: str, month: str = "latest") -> dict:
     }
 
 
+
+@mcp.tool()
+def get_all_clients_weekly_ai_visibility(week: str = "latest") -> dict:
+    """
+    LATEST-WEEK AI VISIBILITY FOR ALL CLIENTS IN ONE CALL (built for Slack
+    agents). For every client in the database, aggregates its most recent
+    week of AI-visibility data: per-platform averages (visibility score
+    0-10, mention rate), total queries tested, overall average score, and
+    week-over-week delta vs that client's previous week. 'week' is reserved
+    for future use; the current implementation always uses each client's
+    own latest week with data. Natural questions: "how did everyone do in
+    AI visibility last week?", "give me the weekly AI visibility for all
+    clients".
+    """
+    from datetime import timedelta
+    out = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, slug FROM clients ORDER BY name")
+            clients = cur.fetchall()
+            for cl in clients:
+                cid = cl["id"]
+                cur.execute(
+                    "SELECT max(check_date) AS latest FROM ai_visibility_checks WHERE client_id=%(cid)s",
+                    {"cid": cid})
+                latest = cur.fetchone()["latest"]
+                if not latest:
+                    out.append({"client": cl["name"], "slug": cl["slug"],
+                                "note": "no AI visibility data ingested yet"})
+                    continue
+                start = latest - timedelta(days=latest.isoweekday() - 1)
+                end = start + timedelta(days=6)
+                prev_start, prev_end = start - timedelta(days=7), start - timedelta(days=1)
+                cur.execute(
+                    """
+                    SELECT platform, count(*) AS queries_tested,
+                           avg(visibility_score) AS avg_visibility_score,
+                           sum(CASE WHEN visibility_score > 0 THEN 1 ELSE 0 END) AS mentions_found
+                    FROM ai_visibility_checks
+                    WHERE client_id = %(cid)s AND check_date BETWEEN %(s)s AND %(e)s
+                    GROUP BY platform ORDER BY platform
+                    """, {"cid": cid, "s": start, "e": end})
+                platforms = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT avg(visibility_score) AS av, count(*) AS q
+                    FROM ai_visibility_checks
+                    WHERE client_id = %(cid)s AND check_date BETWEEN %(s)s AND %(e)s
+                    """, {"cid": cid, "s": start, "e": end})
+                ov = cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT avg(visibility_score) AS av
+                    FROM ai_visibility_checks
+                    WHERE client_id = %(cid)s AND check_date BETWEEN %(s)s AND %(e)s
+                    """, {"cid": cid, "s": prev_start, "e": prev_end})
+                prev = cur.fetchone()["av"]
+                for r in platforms:
+                    r["avg_visibility_score"] = _num(r["avg_visibility_score"])
+                    r["mention_rate_pct"] = _num(100.0 * r["mentions_found"] / r["queries_tested"]) if r["queries_tested"] else None
+                    r.pop("mentions_found", None)
+                overall = _num(ov["av"]) if ov and ov["av"] is not None else None
+                prev = _num(prev)
+                row = {
+                    "client": cl["name"], "slug": cl["slug"],
+                    "week": start.isoformat(), "week_end": end.isoformat(),
+                    "overall_avg_visibility": overall,
+                    "total_queries": ov["q"] if ov else 0,
+                    "platforms": platforms,
+                }
+                if prev is not None and overall is not None:
+                    row["prev_week_avg_visibility"] = _num(prev)
+                    row["wow_delta"] = _num(overall - prev)
+                out.append(row)
+    out.sort(key=lambda r: (-(r.get("overall_avg_visibility") if r.get("overall_avg_visibility") is not None else -1),
+                            r["client"]))
+    return {
+        "description": "latest week of AI-visibility data per client, sorted best-first (visibility score is 0-10)",
+        "clients_with_data": sum(1 for r in out if "note" not in r),
+        "clients_without_data": sum(1 for r in out if "note" in r),
+        "results": out,
+    }
+
+
 if __name__ == "__main__":
     import sys as _sys
     # Stdio transport for Claude Desktop (no URL needed — Claude launches
