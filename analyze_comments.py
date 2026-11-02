@@ -53,6 +53,15 @@ BOILERPLATE = {
     "you are so welcome", "glad it was helpful", "same", "same here", "lol", "this",
     "me too", "nice", "awesome", "exactly", "ok", "yep", "this is the way",
     "yes", "no",
+    # second pass, found by frequency-scanning the groove-life/outdoor-vitals
+    "great video", "looks good", "looks legit", "cool thanks", "awesome thanks",
+    "awesome thank you",
+    # exact whole-comment match only (see _is_low_signal) - a real comment that
+    # merely contains one of these phrases alongside actual content is untouched;
+    # genuine brand/product mentions found during the same scan (e.g. standalone
+    # "Hanks Belts", "suspenders", "Milanese band" answers) were deliberately
+    # NOT added here since they carry real signal even standalone
+    "dm if you still need one",
 }
 
 # Bot/scam templates seen repeating verbatim across real data (found by
@@ -65,6 +74,8 @@ SPAM_SNIPPETS = (
     "dr obela healing home",
     "i'm happy i am here alive i just got cured for",
     "dr aluda herbal medication",
+    "info on the wire app using the handle name",  # giveaway phishing template
+    "use an image sharing site like google photos imgur",  # repeated mod/bot instruction
 )
 
 # Reddit/platform automod messages, not a real user comment.
