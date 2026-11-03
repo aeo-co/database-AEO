@@ -17,7 +17,7 @@ Resources: none. Tools: seven. All return JSON.
 """
 import os
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -64,8 +64,21 @@ def _resolve_client(cur, query: str) -> Optional[dict]:
     "outdoor vitals" or "OutdoorVitals" both find the row whose name is
     "Outdoorvitals" (the README's documented flattened-name case).
     """
+    # Some callers (MCP clients) pass the client arg as a dict like
+    # {'name': 'Winona'} or {'client': 'Winona'} instead of a string.
+    # Unpack the common shapes before coercing, so a dict no longer
+    # crashes downstream .strip() calls.
+    if isinstance(query, dict):
+        for k in ('client', 'name', 'slug', 'client_name', 'value'):
+            v = query.get(k)
+            if isinstance(v, str) and v.strip():
+                query = v
+                break
+        else:
+            query = ' '.join(str(v) for v in query.values() if v)
     if not isinstance(query, str):
         query = str(query)
+    query = query.strip()
     slug = slugify(query)
     cur.execute(
         "SELECT id, name, slug FROM clients WHERE slug = %(slug)s;",
@@ -131,7 +144,7 @@ def list_clients() -> list[dict]:
 
 
 @mcp.tool()
-def get_client_profile(client: str) -> dict:
+def get_client_profile(client: Any) -> dict:
     """
     ONE-CALL complete profile of a single client — the "everything we
     know about client X" tool. Assembles in one response: basic info
@@ -256,7 +269,7 @@ def get_client_profile(client: str) -> dict:
 
 
 @mcp.tool()
-def get_ai_visibility_summary(client: str) -> dict:
+def get_ai_visibility_summary(client: Any) -> dict:
     """
     Per-platform AI visibility summary for one client: how many queries
     were tested on each platform (chatgpt, perplexity, google_ai_mode),
@@ -300,7 +313,7 @@ def get_ai_visibility_summary(client: str) -> dict:
 
 @mcp.tool()
 def get_ai_visibility_queries(
-    client: str,
+    client: Any,
     platform: Optional[str] = None,
     limit: int = 50,
 ) -> list[dict]:
@@ -345,7 +358,7 @@ def get_ai_visibility_queries(
 
 
 @mcp.tool()
-def get_top_mentions(client: str, limit: int = 10) -> list[dict]:
+def get_top_mentions(client: Any, limit: int = 10) -> list[dict]:
     """
     The brands/domains most often mentioned alongside this client in AI
     responses — i.e. who the AI engines name instead of (or next to)
@@ -376,7 +389,7 @@ def get_top_mentions(client: str, limit: int = 10) -> list[dict]:
 
 
 @mcp.tool()
-def get_shopify_report(client: str) -> dict:
+def get_shopify_report(client: Any) -> dict:
     """
     The full multi-section Shopify/web report for one client (from the
     '-all-data.csv' upload): SEO/GSC data, sales, weekly AEO summaries —
@@ -456,7 +469,7 @@ def ingest_shopify_file(path: str, passphrase: str = "") -> dict:
 
 
 @mcp.tool()
-def get_client_context(client: str, context_type: str) -> dict:
+def get_client_context(client: Any, context_type: str) -> dict:
     """
     Fetch whole brand-context documents for one client by context_type:
     'brand_voice' (how the client writes/speaks), 'icp' (ideal customer
@@ -486,7 +499,7 @@ def get_client_context(client: str, context_type: str) -> dict:
 
 @mcp.tool()
 def ingest_client_context(
-    client: str,
+    client: Any,
     context_type: str,
     content: str,
     title: str = "",
@@ -611,7 +624,7 @@ def _kg_resolve_any_node(cur, entity_type: str, entity_key: str) -> int:
 def get_related(
     entity: str = "",
     entity_type: str = "client",
-    client: str = "",
+    client: Any = "",
     rel_type: Optional[str] = None,
     depth: int = 1,
     limit: int = 50,
@@ -659,7 +672,7 @@ def get_related(
 
 
 @mcp.tool()
-def find_similar_clients(client: str, threshold: float = 0.85) -> dict:
+def find_similar_clients(client: Any, threshold: float = 0.85) -> dict:
     """
     "Which clients have similar ICPs / target audiences?" — cosine
     similarity between this client's ICP embedding and every other
@@ -707,9 +720,9 @@ def find_similar_clients(client: str, threshold: float = 0.85) -> dict:
 @mcp.tool()
 def add_edge(
     src_entity_key: str = "",
-    src_client: str = "",
+    src_client: Any = "",
     dst_entity_key: str = "",
-    dst_client: str = "",
+    dst_client: Any = "",
     rel_type: str = "relates_to",
     weight: float = 1.0,
     props: Optional[dict] = None,
@@ -788,7 +801,7 @@ def refresh_similar_clients(threshold: float = 0.85) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def get_visibility_bottlenecks(client: str, gap_threshold: float = 0.3, limit: int = 5) -> dict:
+def get_visibility_bottlenecks(client: Any, gap_threshold: float = 0.3, limit: int = 5) -> dict:
     """
     Find a client's biggest AEO optimization bottlenecks in ONE call.
     For every search intent linked to the client's products where AI
@@ -813,7 +826,7 @@ def get_visibility_bottlenecks(client: str, gap_threshold: float = 0.3, limit: i
 
 
 @mcp.tool()
-def generate_content_brief(client: str, product_sku: str) -> dict:
+def generate_content_brief(client: Any, product_sku: str) -> dict:
     """
     Generate a hyper-targeted, AI-optimized content rewrite brief for one
     client product (Graph-RAG). Walks the knowledge graph: locates the
@@ -837,7 +850,7 @@ def generate_content_brief(client: str, product_sku: str) -> dict:
 
 
 @mcp.tool()
-def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
+def build_visibility_graph(client: Any = "", passphrase: str = "") -> dict:
     """
     Extract Subject-Predicate-Object triplets from the ingested raw data
     (AI visibility checks + Shopify reports + context docs) and map them
@@ -914,7 +927,7 @@ def build_visibility_graph(client: str = "", passphrase: str = "") -> dict:
 
 
 @mcp.tool()
-def get_ga4_summary(client: str, limit: int = 12) -> dict:
+def get_ga4_summary(client: Any, limit: int = 12) -> dict:
     """
     GA4 (Google Analytics 4) traffic summary for one client: sessions,
     engaged sessions, engagement rate, key events, and AI-referral
@@ -1008,7 +1021,7 @@ def _period_bounds(period: str):
 
 
 @mcp.tool()
-def get_weekly_ai_visibility_report(client: str, week: str = "latest") -> dict:
+def get_weekly_ai_visibility_report(client: Any, week: str = "latest") -> dict:
     """
     FULL weekly AI-visibility report for one client, built for Slack agents:
     per-platform averages (visibility score, brand position, mention rate),
@@ -1111,7 +1124,7 @@ def get_weekly_ai_visibility_report(client: str, week: str = "latest") -> dict:
 
 
 @mcp.tool()
-def get_monthly_ai_visibility_report(client: str, month: str = "latest") -> dict:
+def get_monthly_ai_visibility_report(client: Any, month: str = "latest") -> dict:
     """
     FULL monthly AI-visibility report for one client: per-platform monthly
     averages (visibility score, brand position, mention rate), query volume,
@@ -1200,7 +1213,7 @@ def get_monthly_ai_visibility_report(client: str, month: str = "latest") -> dict
 
 
 @mcp.tool()
-def get_weekly_shopify_report(client: str, week: str = "latest") -> dict:
+def get_weekly_shopify_report(client: Any, week: str = "latest") -> dict:
     """
     FULL weekly Shopify/e-commerce report for one client: orders, total
     sales (USD), net items sold, AOV, prior-year comparison, per-product
@@ -1259,7 +1272,7 @@ def get_weekly_shopify_report(client: str, week: str = "latest") -> dict:
 
 
 @mcp.tool()
-def get_monthly_shopify_report(client: str, month: str = "latest") -> dict:
+def get_monthly_shopify_report(client: Any, month: str = "latest") -> dict:
     """
     FULL monthly Shopify/e-commerce report for one client: month total
     orders, revenue, AOV, net items sold, the per-week breakdown inside
