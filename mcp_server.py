@@ -320,7 +320,7 @@ def get_ai_visibility_queries(
     """
     Every AI visibility query row for one client, newest first. Each row
     includes the actual raw AI answer, which brands/URLs it cited, and
-    competitor analysis. Pass `platform` to filter to one ('chatgpt',
+    top-brand attributes. Pass `platform` to filter to one ('chatgpt',
     'perplexity', 'google_ai_mode'). Natural questions this answers:
     "what does ChatGPT say when asked about X?", "show me the actual AI
     answers for client X", "which queries does X fail on?", "read me
@@ -337,7 +337,7 @@ def get_ai_visibility_queries(
                 SELECT
                     v.platform, v.check_date, v.query_text, v.visibility_score,
                     v.brand_position, v.total_brands, v.mentions, v.urls,
-                    v.competitor_analysis, v.raw_output, v.sources,
+                    v.top_brand_attributes, v.raw_output, v.sources,
                     v.related_queries
                 FROM ai_visibility_checks v
                 WHERE v.client_id = %(cid)s

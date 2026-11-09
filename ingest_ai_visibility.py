@@ -56,7 +56,7 @@ PLATFORM_ALIASES = {
 EXPECTED_COLUMNS = {
     "Date", "Brand", "Query", "Raw Output", "URLS",
     "Visbility score", "Total Brands", "Brand Postions",
-    "Competitors Analysis", "Sources", "Queries",
+    "Top Brand Attributes", "Sources", "Queries",
 }
 
 
@@ -166,7 +166,7 @@ def upsert_ai_visibility_row(
     visibility_score=None,
     total_brands=None,
     brand_position=None,
-    competitor_analysis=None,
+    top_brand_attributes=None,
     sources=None,
     related_queries=None,
     source_file=None,
@@ -180,12 +180,12 @@ def upsert_ai_visibility_row(
         INSERT INTO ai_visibility_checks (
             client_id, platform, check_date, query_text, query_hash,
             raw_output, urls, mentions, visibility_score, total_brands,
-            brand_position, competitor_analysis, sources, related_queries,
+            brand_position, top_brand_attributes, sources, related_queries,
             source_file
         ) VALUES (
             %(client_id)s, %(platform)s, %(check_date)s, %(query_text)s, %(query_hash)s,
             %(raw_output)s, %(urls)s, %(mentions)s, %(visibility_score)s, %(total_brands)s,
-            %(brand_position)s, %(competitor_analysis)s, %(sources)s, %(related_queries)s,
+            %(brand_position)s, %(top_brand_attributes)s, %(sources)s, %(related_queries)s,
             %(source_file)s
         )
         ON CONFLICT (client_id, platform, check_date, query_hash) DO UPDATE SET
@@ -195,7 +195,7 @@ def upsert_ai_visibility_row(
             visibility_score = EXCLUDED.visibility_score,
             total_brands = EXCLUDED.total_brands,
             brand_position = EXCLUDED.brand_position,
-            competitor_analysis = EXCLUDED.competitor_analysis,
+            top_brand_attributes = EXCLUDED.top_brand_attributes,
             sources = EXCLUDED.sources,
             related_queries = EXCLUDED.related_queries,
             source_file = EXCLUDED.source_file,
@@ -213,7 +213,7 @@ def upsert_ai_visibility_row(
             "visibility_score": visibility_score,
             "total_brands": total_brands,
             "brand_position": brand_position,
-            "competitor_analysis": competitor_analysis,
+            "top_brand_attributes": top_brand_attributes,
             "sources": Jsonb(sources or []),
             "related_queries": Jsonb(related_queries or []),
             "source_file": source_file,
@@ -232,7 +232,7 @@ def ingest_row(
     visibility_score=None,
     total_brands=None,
     brand_position=None,
-    competitor_analysis=None,
+    top_brand_attributes=None,
     sources=None,
     related_queries=None,
     source_file="api",
@@ -265,7 +265,7 @@ def ingest_row(
                 visibility_score=clean_num(visibility_score),
                 total_brands=clean_num(total_brands),
                 brand_position=clean_num(brand_position),
-                competitor_analysis=clean_str(competitor_analysis),
+                top_brand_attributes=clean_str(top_brand_attributes),
                 sources=coerce_list(sources),
                 related_queries=coerce_list(related_queries),
                 source_file=source_file,
@@ -374,7 +374,7 @@ def ingest_file(path: Path) -> dict:
                     visibility_score=clean_num(row.get("Visbility score")),
                     total_brands=clean_num(row.get("Total Brands")),
                     brand_position=clean_num(row.get("Brand Postions")),
-                    competitor_analysis=clean_str(row.get("Competitors Analysis")),
+                    top_brand_attributes=clean_str(row.get("Top Brand Attributes")),
                     sources=parse_json_cell(row.get("Sources")),
                     related_queries=parse_json_cell(row.get("Queries")),
                     source_file=path.name,

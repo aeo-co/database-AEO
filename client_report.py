@@ -43,7 +43,7 @@ def print_ai_visibility(client_id: int):
                 """
                 SELECT platform, check_date, query_text, visibility_score,
                        brand_position, total_brands, mentions, raw_output,
-                       competitor_analysis
+                       top_brand_attributes
                 FROM ai_visibility_checks
                 WHERE client_id = %(client_id)s
                 ORDER BY check_date DESC, platform;
@@ -67,8 +67,8 @@ def print_ai_visibility(client_id: int):
         print(f"Query: {r['query_text']}")
         if r["mentions"]:
             print(f"Mentioned: {', '.join(r['mentions'])}")
-        if r["competitor_analysis"]:
-            print(f"\nCompetitor analysis:\n{r['competitor_analysis']}")
+        if r["top_brand_attributes"]:
+            print(f"\nTop brand attributes:\n{r['top_brand_attributes']}")
         if r["raw_output"]:
             print(f"\nRaw response:\n{r['raw_output']}")
         print("-" * 60)

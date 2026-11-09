@@ -87,7 +87,7 @@ def query_detail(client: str):
                 SELECT
                     v.platform, v.check_date, v.query_text, v.visibility_score,
                     v.brand_position, v.total_brands, v.mentions,
-                    v.raw_output, v.competitor_analysis, v.sources, v.related_queries
+                    v.raw_output, v.top_brand_attributes, v.sources, v.related_queries
                 FROM ai_visibility_checks v
                 JOIN clients c ON c.id = v.client_id
                 WHERE c.slug = %(slug)s
@@ -285,7 +285,7 @@ def weekly_report_json(client_slug: str, report_date: str):
             cur.execute(
                 """
                 SELECT platform, query_text, visibility_score, brand_position,
-                       total_brands, mentions, urls, competitor_analysis,
+                       total_brands, mentions, urls, top_brand_attributes,
                        raw_output, sources, related_queries
                 FROM ai_visibility_checks
                 WHERE client_id = %(cid)s AND check_date = %(date)s
@@ -339,7 +339,7 @@ class AIVisibilityRow(BaseModel):
     visibility_score: Any = None
     total_brands: Any = None
     brand_position: Any = None
-    competitor_analysis: Optional[str] = None
+    top_brand_attributes: Optional[str] = None
     sources: Any = None
     related_queries: Any = None
     source_file: str = "n8n"
@@ -371,7 +371,7 @@ def ingest_ai_visibility_row(row: AIVisibilityRow):
             visibility_score=row.visibility_score,
             total_brands=row.total_brands,
             brand_position=row.brand_position,
-            competitor_analysis=row.competitor_analysis,
+            top_brand_attributes=row.top_brand_attributes,
             sources=row.sources,
             related_queries=row.related_queries,
             source_file=row.source_file,
