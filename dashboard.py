@@ -8,6 +8,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -745,8 +746,25 @@ def research_stats(client: str):
             }
 
 
-# Static frontend - must be mounted last so /api/* routes above take priority.
-app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="static")
+# Static frontend. Only the pages and vendor/ are served - never mount the
+# repo dir itself, or /.env (DB credentials) and the .py source are public.
+_HERE = Path(__file__).parent
+_PAGES = {"index.html", "reports.html", "upload.html"}
+
+
+@app.get("/", include_in_schema=False)
+def index_page():
+    return FileResponse(_HERE / "index.html")
+
+
+@app.get("/{page}", include_in_schema=False)
+def html_page(page: str):
+    if page not in _PAGES:
+        raise HTTPException(status_code=404)
+    return FileResponse(_HERE / page)
+
+
+app.mount("/vendor", StaticFiles(directory=_HERE / "vendor"), name="vendor")
 
 
 if __name__ == "__main__":
