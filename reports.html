@@ -318,7 +318,6 @@ async function loadWeek(slug, reportDate) {
     <tr class="detail" id="detail-${i}">
       <td colspan="4">
         ${q.mentions && q.mentions.length ? `<section><h4>Mentioned</h4>${q.mentions.map(m => `<span class="pill mention-pill">${escapeHtml(m)}</span>`).join('')}</section>` : ''}
-        ${q.top_brand_attributes ? `<section><h4>Top brand attributes</h4>${escapeHtml(q.top_brand_attributes)}</section>` : ''}
         ${domains.length ? `<section><h4>Cited sources</h4>${domains.map(d => `<span class="pill mention-pill">${escapeHtml(d)}</span>`).join('')}</section>` : ''}
         ${q.related_queries && q.related_queries.length ? `<section><h4>Related queries</h4>${q.related_queries.map(rq => `<span class="pill mention-pill">${escapeHtml(rq)}</span>`).join('')}</section>` : ''}
         ${q.raw_output ? `<section><h4>Raw response</h4>${escapeHtml(q.raw_output)}</section>` : ''}
