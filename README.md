@@ -239,6 +239,31 @@ live. If you also expose `mcp_server.py` and `dashboard.py` on the VPS,
 front both with whatever auth your team uses - same caveat as the
 dashboard: this is client data, don't make it public.
 
+## Removing a client
+
+Ingest auto-registers any client name it sees, so deleting a client's row
+on its own isn't enough - the next n8n run or upload with that name brings
+it back. To remove one for good:
+
+1. Back up its rows into `<table>_backup_<reason>` tables (see below).
+2. `DELETE FROM clients WHERE id = ...` - every table's foreign key is
+   `ON DELETE CASCADE`, so its data goes with it.
+3. Add its flattened name (lowercase, letters/digits only, e.g.
+   `livingwellwithdrmichelle`) to `removed_clients`. Every ingest path
+   then refuses it: n8n rows get a 400, files are skipped with a reason.
+   Delete the `removed_clients` row to bring the client back.
+
+## Backup tables (`*_backup_*`)
+
+The live DB holds snapshot tables named `<table>_backup_<what happened>`,
+e.g. `clients_backup_merge89` or
+`ai_visibility_checks_backup_removed_babyrx_livingwell_20261111`. Each is a
+copy of the rows taken right before a client merge (`merge<id>`), removal
+(`removed_<client or id>`) or delete (`del<id>`). They're kept on purpose
+so any of those can be undone - don't drop them. No code reads them, and
+they're not in `schema.sql`. Older ones still have the pre-rename
+`competitor_analysis` column.
+
 ## Not built yet, on purpose
 
 - No live pulls from GA4 / GSC / Shopify. That needs real API credentials,

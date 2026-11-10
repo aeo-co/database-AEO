@@ -34,7 +34,7 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from db import get_conn
-from ingest_ai_visibility import get_or_create_client, slugify
+from ingest_ai_visibility import RemovedClientError, get_or_create_client, slugify
 
 # Web-upload convention (see upload.html): '{client}-youtube-comments.csv'.
 # The CLI --client flag still works and takes priority when given, so
@@ -210,7 +210,10 @@ def ingest_file(path: Path, client_slug: str = None) -> dict:
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            client_id = get_or_create_client(cur, client_name)
+            try:
+                client_id = get_or_create_client(cur, client_name)
+            except RemovedClientError as e:
+                return {"file": path.name, "status": "skipped", "reason": str(e)}
 
             # one file may hold several videos; register each once
             source_ids = {}

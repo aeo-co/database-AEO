@@ -7,8 +7,42 @@ CREATE TABLE IF NOT EXISTS clients (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     slug TEXT NOT NULL UNIQUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    manager TEXT,                       -- account manager
+    seo_manager TEXT,
+    cohort TEXT                         -- '1' | '2' | NULL
 );
+
+-- Added after the table first shipped - bring older DBs up to date.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS manager TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS seo_manager TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS cohort TEXT;
+
+-- Alternate names that route to an existing client at ingest time, so a
+-- file named e.g. 'pinderplotkinllc' lands on the right client instead of
+-- auto-registering a duplicate. See ingest_ai_visibility.py.
+CREATE TABLE IF NOT EXISTS client_aliases (
+    alias TEXT PRIMARY KEY,
+    client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE
+);
+
+-- Clients that were removed on purpose. Ingest refuses to re-register or
+-- load data for these (see get_or_create_client) - without this, the next
+-- n8n run or upload with that client's name quietly re-creates them.
+-- name_key is the flattened name (lowercase, alphanumerics only), so every
+-- spelling of the name is caught. To bring a client back, delete its row.
+CREATE TABLE IF NOT EXISTS removed_clients (
+    name_key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    removed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    note TEXT
+);
+
+INSERT INTO removed_clients (name_key, name, note) VALUES
+    ('babyrx', 'BabyRx', 'removed 2026-10-13, re-added by n8n by mistake'),
+    ('livingwellwithdrmichelle', 'Living Well with Dr. Michelle', 'removed 2026-10-13, re-added by n8n by mistake'),
+    ('livingwell', 'Living Well with Dr. Michelle', 'short-name variant')
+ON CONFLICT (name_key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS ga4_weekly (
     id SERIAL PRIMARY KEY,
@@ -67,13 +101,26 @@ CREATE TABLE IF NOT EXISTS ai_visibility_checks (
     visibility_score NUMERIC,
     total_brands INT,
     brand_position NUMERIC,
-    competitor_analysis TEXT,
+    top_brand_attributes TEXT,
     sources JSONB NOT NULL DEFAULT '[]'::jsonb,
     related_queries JSONB NOT NULL DEFAULT '[]'::jsonb,
     source_file TEXT,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (client_id, platform, check_date, query_hash)
 );
+
+-- competitor_analysis was renamed to top_brand_attributes. CREATE TABLE
+-- IF NOT EXISTS won't touch an existing table, so rename it here for any
+-- DB created before the rename. No-op once renamed.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'ai_visibility_checks'
+                 AND column_name = 'competitor_analysis') THEN
+        ALTER TABLE ai_visibility_checks
+            RENAME COLUMN competitor_analysis TO top_brand_attributes;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS aeo_content_log (
     id SERIAL PRIMARY KEY,
@@ -175,6 +222,19 @@ CREATE TABLE IF NOT EXISTS shopify_report_sections (
 CREATE UNIQUE INDEX IF NOT EXISTS shopify_report_sections_client_section_period_key
     ON shopify_report_sections (client_id, section_name, COALESCE(report_period, ''));
 
+-- Category for each domain the AI engines cite (website categorization
+-- merge). Not per-client - one row per domain.
+CREATE TABLE IF NOT EXISTS website_categorisation (
+    id BIGSERIAL PRIMARY KEY,
+    domain TEXT NOT NULL UNIQUE,
+    category TEXT NOT NULL CHECK (category IN (
+        'Blog', 'Brand Websites', 'Review Sites', 'Ecommerce', 'Community',
+        'Directories', 'File', 'Research', 'Other', 'Social Media'
+    )),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_website_categorisation_category ON website_categorisation (category);
 CREATE INDEX IF NOT EXISTS idx_ga4_client_week ON ga4_weekly (client_id, week_start);
 CREATE INDEX IF NOT EXISTS idx_gsc_client_week ON gsc_weekly (client_id, week_start);
 CREATE INDEX IF NOT EXISTS idx_shopify_client_week ON shopify_weekly (client_id, week_start);

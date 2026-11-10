@@ -128,10 +128,21 @@ def flatten(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower())
 
 
+class RemovedClientError(ValueError):
+    """The client was removed on purpose (removed_clients) - don't load it."""
+
+
 def get_or_create_client(cur, name: str) -> int:
     name = name.strip()
     slug = slugify(name)
     key = flatten(name)
+    cur.execute("SELECT name FROM removed_clients WHERE name_key = %s;", (key,))
+    removed = cur.fetchone()
+    if removed:
+        raise RemovedClientError(
+            f"client '{removed['name']}' was removed - not loading its data "
+            "(delete it from removed_clients to bring it back)"
+        )
     # Match an existing client by its flattened name so case/spacing/hyphen
     # variants ("Outdoorvitals" vs "Outdoor Vitals", "Theswellscore" vs
     # "The Swell Score") resolve to the same row instead of spawning a
@@ -358,7 +369,10 @@ def ingest_file(path: Path) -> dict:
     written = 0
     with get_conn() as conn:
         with conn.cursor() as cur:
-            client_id = get_or_create_client(cur, client_name)
+            try:
+                client_id = get_or_create_client(cur, client_name)
+            except RemovedClientError as e:
+                return {"filename": path.name, "status": "skipped", "reason": str(e)}
 
             def insert_row(row):
                 nonlocal written

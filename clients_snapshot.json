@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-10-13 (rev2: removed Living Well with Dr. Michelle)",
+ "generated_at": "2026-11-11 (BabyRx/Living Well removed again; Pinder slug is pinderplotkin)",
  "clients": [
   {
    "id": 76,
@@ -57,9 +57,9 @@
    "slug": "outdoor-vitals"
   },
   {
-   "id": 131,
-   "name": "Pinder Plotkin LLC",
-   "slug": "pinder-plotkin-llc"
+   "id": 159,
+   "name": "PinderPlotkin",
+   "slug": "pinderplotkin"
   },
   {
    "id": 70,

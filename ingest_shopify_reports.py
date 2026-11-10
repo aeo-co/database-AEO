@@ -23,7 +23,7 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from db import get_conn
-from ingest_ai_visibility import get_or_create_client, slugify
+from ingest_ai_visibility import RemovedClientError, get_or_create_client, slugify
 
 # Accept both monthly ({client}-all-data.csv) and weekly ({client}-weekly-*.csv)
 # exports. Weekly files carry their period/client in the === Report Meta ===
@@ -97,7 +97,10 @@ def ingest_file(path: Path) -> dict:
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            client_id = get_or_create_client(cur, client_name)
+            try:
+                client_id = get_or_create_client(cur, client_name)
+            except RemovedClientError as e:
+                return {"filename": path.name, "status": "skipped", "reason": str(e)}
             for section_name, lines in sections.items():
                 columns, rows = parse_csv_lines(lines)
                 cur.execute(
