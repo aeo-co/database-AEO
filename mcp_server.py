@@ -58,9 +58,10 @@ mcp = FastMCP(
 
 def _resolve_client(cur, query: str) -> Optional[dict]:
     """
-    Accept either a slug ('altenew', 'outdoorvitals') or a name fragment
-    ('outdoor vitals', 'OutdoorVitals'). Tries slug first, then falls
-    back to a case-insensitive substring match on the client name — so
+    Accept a slug ('altenew', 'outdoorvitals'), a client id (64 or "64"),
+    or a name fragment ('outdoor vitals', 'OutdoorVitals'). Tries slug
+    first, then id, then falls back to a case-insensitive substring
+    match on the client name — so
     "outdoor vitals" or "OutdoorVitals" both find the row whose name is
     "Outdoorvitals" (the README's documented flattened-name case).
     """
@@ -87,6 +88,15 @@ def _resolve_client(cur, query: str) -> Optional[dict]:
     row = cur.fetchone()
     if row:
         return row
+    # A bare number is a client id (e.g. 64 or "64" -> Winona).
+    if query.isdigit():
+        cur.execute(
+            "SELECT id, name, slug FROM clients WHERE id = %(id)s;",
+            {"id": int(query)},
+        )
+        row = cur.fetchone()
+        if row:
+            return row
     # Fall back: match against the client name OR slug (both stripped
     # of non-alphanumerics so separator differences don't matter). So
     # "outdoor vitals" finds the row whose stored name is "Outdoorvitals"
