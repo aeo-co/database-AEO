@@ -55,8 +55,13 @@ CREATE TABLE IF NOT EXISTS ga4_weekly (
     bounce_rate NUMERIC(5,2),
     metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (client_id, week_start)
+    UNIQUE (client_id, week_start, week_end)
 );
+-- Keyed on the full window (see gsc_weekly below for why). These two lines
+-- bring an older DB (UNIQUE (client_id, week_start)) up to date.
+ALTER TABLE ga4_weekly DROP CONSTRAINT IF EXISTS ga4_weekly_client_id_week_start_key;
+CREATE UNIQUE INDEX IF NOT EXISTS ga4_weekly_client_id_week_start_week_end_key
+    ON ga4_weekly (client_id, week_start, week_end);
 
 CREATE TABLE IF NOT EXISTS gsc_weekly (
     id SERIAL PRIMARY KEY,
@@ -69,8 +74,14 @@ CREATE TABLE IF NOT EXISTS gsc_weekly (
     avg_position NUMERIC(5,2),
     metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (client_id, week_start)
+    UNIQUE (client_id, week_start, week_end)
 );
+-- Keyed on the full window, not just week_start: a month and the week that
+-- starts on the same day (e.g. 2026-10 and 2026-10-wk1) are separate rows.
+-- These two lines bring an older DB (UNIQUE (client_id, week_start)) up to date.
+ALTER TABLE gsc_weekly DROP CONSTRAINT IF EXISTS gsc_weekly_client_id_week_start_key;
+CREATE UNIQUE INDEX IF NOT EXISTS gsc_weekly_client_id_week_start_week_end_key
+    ON gsc_weekly (client_id, week_start, week_end);
 
 CREATE TABLE IF NOT EXISTS shopify_weekly (
     id SERIAL PRIMARY KEY,
@@ -248,3 +259,31 @@ CREATE INDEX IF NOT EXISTS idx_research_comments_source ON research_comments (so
 CREATE INDEX IF NOT EXISTS idx_research_comments_parent ON research_comments (platform, parent_external_id);
 CREATE INDEX IF NOT EXISTS idx_comment_analysis_client ON research_comment_analysis (client_id);
 CREATE INDEX IF NOT EXISTS idx_comment_analysis_questions ON research_comment_analysis (client_id) WHERE is_question;
+
+-- Convenience views for ad-hoc querying (psql / DB console). No app code
+-- reads them. Copied from the live DB; CREATE OR REPLACE keeps re-runs safe
+-- as long as the column list stays the same.
+CREATE OR REPLACE VIEW v_ai_visibility AS
+SELECT c.slug AS client,
+       a.platform,
+       a.check_date,
+       left(a.query_text, 60) AS query_preview,
+       a.query_text,
+       round(a.visibility_score, 2) AS visibility_score,
+       a.brand_position,
+       a.total_brands,
+       jsonb_array_length(a.mentions) AS mention_count,
+       a.top_brand_attributes
+FROM ai_visibility_checks a
+JOIN clients c ON c.id = a.client_id;
+
+CREATE OR REPLACE VIEW v_ai_visibility_summary AS
+SELECT c.slug AS client,
+       a.platform,
+       count(*) AS queries_tested,
+       round(avg(a.visibility_score), 1) AS avg_visibility,
+       round(avg(a.brand_position), 1) AS avg_brand_position,
+       max(a.check_date) AS last_checked
+FROM ai_visibility_checks a
+JOIN clients c ON c.id = a.client_id
+GROUP BY c.slug, a.platform;

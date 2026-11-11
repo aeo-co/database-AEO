@@ -942,7 +942,9 @@ def get_ga4_summary(client: Any, limit: int = 12) -> dict:
     GA4 (Google Analytics 4) traffic summary for one client: sessions,
     engaged sessions, engagement rate, key events, and AI-referral
     breakdown (chatgpt.com, gemini, claude.ai, perplexity, etc.) for
-    each ingested period (weekly or monthly), newest first. Answers
+    each ingested period (weekly or monthly), oldest first. Each period
+    has period_kind 'weekly' or 'monthly'; months and weeks overlap, so
+    totals are given per kind - never add the two together. Answers
     natural questions like "how is Winona's traffic trending?",
     "how many sessions did Outdoor Vitals get in September?", "how
     much traffic comes from ChatGPT?", "GA4 data for Guidepost".
@@ -962,7 +964,7 @@ def get_ga4_summary(client: Any, limit: int = 12) -> dict:
             cur.execute(
                 """SELECT week_start, week_end, sessions, conversions, metrics
                    FROM ga4_weekly WHERE client_id=%s
-                   ORDER BY week_start DESC LIMIT %s""",
+                   ORDER BY week_start DESC, week_end DESC LIMIT %s""",
                 (cli["id"], max(1, min(limit, 52))),
             )
             rows = cur.fetchall()
@@ -973,9 +975,11 @@ def get_ga4_summary(client: Any, limit: int = 12) -> dict:
     periods = []
     for r in reversed(rows):  # chronological order for trends
         m = r["metrics"] or {}
+        days = (r["week_end"] - r["week_start"]).days + 1
         periods.append({
             "period_start": r["week_start"].isoformat(),
             "period_end": r["week_end"].isoformat(),
+            "period_kind": "weekly" if days <= 7 else "monthly",
             "sessions": r["sessions"],
             "key_events": r["conversions"],
             "engaged_sessions": m.get("engaged_sessions"),
@@ -984,12 +988,134 @@ def get_ga4_summary(client: Any, limit: int = 12) -> dict:
             "ai_referrals_total": m.get("ai_total"),
             "ai_by_source": m.get("ai_by_source"),
         })
-    total_sessions = sum(p["sessions"] or 0 for p in periods)
-    total_ke = sum(p["key_events"] or 0 for p in periods)
+    # Months and weeks overlap (Oct 2026 contains 2026-10-wk1), so summing
+    # every period would double count - total each kind separately.
+    totals = {}
+    for kind in ("monthly", "weekly"):
+        ps = [p for p in periods if p["period_kind"] == kind]
+        if ps:
+            totals[kind] = {"periods": len(ps),
+                            "sessions": sum(p["sessions"] or 0 for p in ps),
+                            "key_events": sum(p["key_events"] or 0 for p in ps)}
     return {"client": cli["name"], "slug": cli["slug"],
             "periods_returned": len(periods),
-            "range": [periods[0]["period_start"], periods[-1]["period_end"]],
-            "totals": {"sessions": total_sessions, "key_events": total_ke},
+            "range": [min(p["period_start"] for p in periods),
+                      max(p["period_end"] for p in periods)],
+            "totals": totals,
+            "periods": periods}
+
+
+_GSC_BREAKDOWNS = ("country", "device", "page", "query_branded", "query_nonbranded",
+                   "search_appearance", "ai_features_country", "ai_features_device",
+                   "ai_features_page")
+
+
+@mcp.tool()
+def get_gsc_summary(client: Any, limit: int = 12, period_kind: str = "",
+                    include_breakdowns: bool = False,
+                    include_internal: bool = False) -> dict:
+    """
+    Google Search Console (organic search) summary for one client: clicks,
+    impressions, CTR %, average position, branded vs non-branded query
+    split, and Google AI-features (AI Overviews / AI Mode) impressions,
+    per ingested period, oldest first. Answers "how is Winona's organic
+    search trending?", "how many clicks did Rootganic get from Google in
+    October?", "how much of Outdoor Vitals' search traffic is branded?",
+    "how many AI Overview impressions does Jamie Anne get?".
+
+    Each period has period_kind 'weekly' or 'monthly'. Months and weeks
+    overlap, so totals are given per kind - never add the two together.
+    period_kind='weekly' or 'monthly' returns only that kind.
+
+    include_breakdowns=True adds per-period top countries, devices,
+    pages, branded / non-branded queries, search appearance, and
+    AI-features by country/device/page (larger response).
+
+    include_internal=True adds branded *concern* queries (e.g. "<brand>
+    scam", "cancel <brand>"). These are INTERNAL ONLY - never put them in
+    anything client-facing without Julian's sign-off. Leave it False
+    unless the user explicitly asks for concern queries.
+
+    'client' accepts a slug, id, or name fragment. Clients whose GSC
+    access is still pending have no rows yet.
+    """
+    kind = (period_kind or "").strip().lower()
+    if kind not in ("", "weekly", "monthly"):
+        return {"error": f"period_kind must be 'weekly', 'monthly' or empty, got '{period_kind}'"}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cli = _resolve_client(cur, client)
+            if not cli:
+                return {"error": f"no client matching '{client}'",
+                        "hint": "call list_clients for valid slugs"}
+            kind_sql = ""
+            if kind == "weekly":
+                kind_sql = "AND week_end - week_start <= 6"
+            elif kind == "monthly":
+                kind_sql = "AND week_end - week_start > 6"
+            cur.execute(
+                f"""SELECT week_start, week_end, clicks, impressions, ctr, avg_position, metrics
+                      FROM gsc_weekly WHERE client_id = %s {kind_sql}
+                     ORDER BY week_start DESC, week_end DESC LIMIT %s""",
+                (cli["id"], max(1, min(int(limit), 52))),
+            )
+            rows = cur.fetchall()
+    if not rows:
+        return {"client": cli["name"], "slug": cli["slug"], "periods": [],
+                "note": "no GSC data ingested for this client (GSC access may still be pending)"}
+
+    periods = []
+    for r in reversed(rows):  # chronological
+        m = r["metrics"] or {}
+        web = m.get("web") or {}
+        ai = ((m.get("ai_features") or {}).get("rows") or {}).get("total") or {}
+        days = (r["week_end"] - r["week_start"]).days + 1
+        p = {
+            "period_start": r["week_start"].isoformat(),
+            "period_end": r["week_end"].isoformat(),
+            "period_kind": "weekly" if days <= 7 else "monthly",
+            "clicks": r["clicks"],
+            "impressions": r["impressions"],
+            "ctr_pct": _num(r["ctr"]),
+            "avg_position": _num(r["avg_position"]),
+            "branded": {k: v for k, v in (web.get("branded_queries") or {}).items() if k != "caveat"} or None,
+            "nonbranded": {k: v for k, v in (web.get("nonbranded_queries") or {}).items() if k != "caveat"} or None,
+            "clicks_anonymized_or_beyond_export":
+                (web.get("anonymized_or_beyond_export") or {}).get("clicks"),
+            "ai_features": {
+                "impressions": ai.get("impressions"),
+                "pages_with_impressions": ai.get("page_count"),
+                "window": (m.get("ai_features") or {}).get("window"),
+            } if ai else None,
+            "notes": sorted(set(
+                (m.get("total_caveats") or [])
+                + ([web["branded_queries"]["caveat"]] if (web.get("branded_queries") or {}).get("caveat") else [])
+                + ((m.get("ai_features") or {}).get("caveats") or [])
+            )) or None,
+        }
+        if include_breakdowns:
+            p["breakdowns"] = {k: (m.get(k) or {}).get("rows") for k in _GSC_BREAKDOWNS if m.get(k)}
+        if include_internal and m.get("internal_only"):
+            io = m["internal_only"]
+            p["internal_only"] = {
+                "WARNING": "INTERNAL ONLY - never client-facing without Julian",
+                "branded_concern_totals": (io.get("web") or {}).get("branded_concern_queries"),
+                "concern_queries": (io.get("query_concern") or {}).get("rows"),
+            }
+        periods.append(p)
+
+    totals = {}
+    for k in ("monthly", "weekly"):
+        ps = [p for p in periods if p["period_kind"] == k]
+        if ps:
+            totals[k] = {"periods": len(ps),
+                         "clicks": sum(p["clicks"] or 0 for p in ps),
+                         "impressions": sum(p["impressions"] or 0 for p in ps)}
+    return {"client": cli["name"], "slug": cli["slug"],
+            "periods_returned": len(periods),
+            "range": [min(p["period_start"] for p in periods),
+                      max(p["period_end"] for p in periods)],
+            "totals": totals,
             "periods": periods}
 
 
