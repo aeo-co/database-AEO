@@ -4,20 +4,23 @@ comment_insights.py - aggregation layer over research_comment_analysis
 into clean themes, and finds content gaps by comparing real extracted
 questions against each client's existing context docs.
 
-Same shape as insights.py - additive, read-only over existing data, no
-new tables, safe to re-run any time. The content-gap finder is the same
-semantic-gap idea as insights.get_visibility_bottlenecks (embed, compare
-against client_contexts via cosine distance, flag what's far), just fed
-by real organic questions instead of synthetic AI-engine search intents.
+Additive, read-only over existing data, no new tables, safe to re-run any
+time. The content-gap finder embeds real organic questions, compares them
+against client_contexts by cosine distance, and flags what's far.
 
 No torch/sentence-transformers import at module level - client_context's
-embed_texts() lazy-loads the model on first call only (same OOM safety
-as insights.py, 1GB droplet).
+embed_texts() lazy-loads the model on first call only (OOM safety on the
+1GB droplet).
 """
 import statistics
 
 from db import get_conn
-from insights import to_pgvector
+
+
+def to_pgvector(vec) -> str:
+    """Python list -> pgvector text literal '[0.1,0.2,...]'."""
+    return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+
 
 DEFAULT_CLUSTER_THRESHOLD = 0.75
 DEFAULT_GAP_PERCENTILE = 70  # top 30% most-distant-for-THIS-client become gap candidates

@@ -191,8 +191,7 @@ CREATE TABLE IF NOT EXISTS research_comments (
 
 -- LLM extraction pass over research_comments (see analyze_comments.py):
 -- real questions pulled out of the noise, sentiment, and raw topic tags.
--- One row per comment, additive - never touches research_comments itself,
--- same "source stays source of truth" philosophy as kg_nodes/kg_edges.
+-- One row per comment, additive - never touches research_comments itself.
 -- Re-running analyze_comments.py only processes comments with no row
 -- here yet, unless told to re-analyze.
 CREATE TABLE IF NOT EXISTS research_comment_analysis (

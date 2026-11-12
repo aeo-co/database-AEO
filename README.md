@@ -17,17 +17,15 @@ Both servers run on the DigitalOcean droplet from `/root/database-AEO`.
 |---|---|
 | `db.py` | The one place every DB connection comes from. Reads `.env`. Rows come back as dicts. |
 | `schema.sql` / `migrate.py` | Core schema; `migrate.py` applies it. Safe to re-run. |
-| `migrate_client_contexts.sql`, `migrate_kg.sql`, `migrate_hybrid_v1.sql` | Additive migrations for brand context (pgvector), the knowledge graph, and the graph ontology. Apply with `psql` after `migrate.py` on a fresh DB. |
+| `migrate_client_contexts.sql` | Additive migration for brand context (pgvector). Apply with `psql` after `migrate.py` on a fresh DB. |
 | `migrate_report_period.sql` | Historical hand-applied migration; already folded into `schema.sql`. |
 | `dashboard.py` | FastAPI app: JSON API + serves `index.html`, `reports.html`, `upload.html`. Also the n8n ingest endpoint. |
 | `mcp_server.py` | MCP server (Streamable HTTP, or stdio with `--stdio`). |
 | `ingest_*.py` | Loaders, one per source (see below). |
 | `client_context.py` | Shared embed + upsert helpers for brand-context docs. |
-| `kg.py`, `triplet_extraction.py`, `insights.py` | Knowledge graph: node backfill, similarity edges, triplet extraction, bottleneck/brief tools. |
 | `analyze_comments.py`, `comment_insights.py` | LLM pass over research comments, then topic clustering + content-gap finder. |
 | `client_report.py` | Terminal lookup: AI visibility summary + Shopify report for one client. |
 | `clients_snapshot.json` | Snapshot of the current client list. |
-| `desc_kg.py` | Prints the live `kg_*` table schema (debug helper). |
 | `deploy/` | systemd unit for the dashboard + install notes. |
 | `vendor/` | Chart.js, served locally to the dashboard. |
 
@@ -48,8 +46,13 @@ pip install -r requirements.txt
 | `OPENAI_API_KEY` | `analyze_comments.py` |
 | `OPENROUTER_API_KEY` | Set in `.env`, but not read by any code in this repo |
 
-Fresh database: `python migrate.py`, then apply the three additive
-`migrate_*.sql` files with `psql` (pgvector must be available).
+Fresh database: `python migrate.py`, then apply
+`migrate_client_contexts.sql` with `psql` (pgvector must be available).
+
+The knowledge graph (`kg_nodes` / `kg_edges`) was removed on 2026-11-13.
+A verified backup (CSV per table + `schema.sql` + `restore.py`) is kept
+outside the repo at `D:/AEO.co/backups/kg_backup_2026-11-13.zip` (on Zaryab's machine); the
+code is in git history before that date.
 
 ## Data model
 
@@ -61,12 +64,11 @@ Fresh database: `python migrate.py`, then apply the three additive
 | `ai_visibility_checks` | One row per client / platform / date / query: score, position, mentions, sources, raw output, `top_brand_attributes` | `ingest_ai_visibility.py`, upload box, n8n |
 | `shopify_report_sections` | Sections of `{client}-all-data.csv` reports, stored as-is (columns vary per client); `report_period` NULL = monthly | `ingest_shopify_reports.py`, upload box |
 | `shopify_weekly` | Shopify AI-channel sales (ChatGPT agentic sales etc.) | `ingest_shopify_ai.py` |
-| `ga4_weekly` | GA4 sessions + AI-referral breakdown per period (weekly or monthly, keyed on the full window; `metrics.period_kind`) | `ingest_ga4_weekly.py` |
+| `ga4_weekly` | GA4 sessions, key events, revenue, AI-referral / direct / YouTube breakdowns per period (weekly or monthly, keyed on the full window). `metrics.invalid` marks known-bad tracking, `metrics.not_reported` lists withheld metrics, `metrics.caveats` keeps the source notes. Clients without GA4 access have no rows | `ingest_ga4_weekly.py` |
 | `gsc_weekly` | Search Console clicks / impressions / CTR / position per period (weekly or monthly, keyed on the full window); breakdowns (branded vs non-branded, country, device, page, queries, AI features) in `metrics`. `metrics.internal_only` holds concern queries - never client-facing | `ingest_gsc_weekly.py` |
 | `research_sources` / `research_comments` | YouTube videos / Reddit threads and their comments | `ingest_reddit_csv.py`, `ingest_youtube_csv.py`, upload box, n8n |
 | `research_comment_analysis` | LLM-extracted questions, sentiment, topic tags per comment | `analyze_comments.py` |
 | `client_contexts` | Whole brand-context markdown docs + 384-dim embeddings | `ingest_client_context.py`, MCP `ingest_client_context` |
-| `kg_nodes` / `kg_edges` | Knowledge graph over the above | `kg.py`, `triplet_extraction.py`, MCP tools |
 | `website_categorisation` | Domain -> category lookup | external load |
 | `v_ai_visibility`, `v_ai_visibility_summary` (views) | Readable per-query rows / per-platform rollup for ad-hoc SQL; no app code uses them | `schema.sql` |
 | `aeo_content_log` | In the schema, **no loader yet - empty** | - |
@@ -111,8 +113,6 @@ each as JSON (with `passphrase`).
 python analyze_comments.py --client outdoor-vitals [--limit 50] [--reanalyze]
 python comment_insights.py topics --client outdoor-vitals
 python comment_insights.py gaps --client outdoor-vitals
-python kg.py backfill [--dry-run]
-python kg.py refresh-similar [--threshold 0.85]
 ```
 
 ## Web dashboard
@@ -162,10 +162,6 @@ branded vs non-branded, AI-features impressions per period; optional
 breakdowns; concern queries only with `include_internal=True`).
 
 **Brand context:** `get_client_context`, `ingest_client_context`.
-
-**Knowledge graph & insights:** `get_related`, `find_similar_clients`,
-`refresh_similar_clients`, `add_edge`, `build_visibility_graph`,
-`get_visibility_bottlenecks`, `generate_content_brief`.
 
 **Ingest:** `ingest_file` (AI visibility .xlsx), `ingest_shopify_file`.
 
