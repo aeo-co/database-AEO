@@ -1,272 +1,211 @@
 # Smart Marketer Data Hub
 
-Single Postgres database that holds weekly per-client data from every
-source in the data inventory (GA4, GSC, Shopify, AI visibility, AEO
-content), so reporting and agent analysis both read from one place
-instead of scattered manual pulls.
+One Postgres database holding per-client data from every source we track
+(AI visibility, Shopify, GA4, Reddit/YouTube research comments, brand
+context), plus three ways to read it:
 
-## What's here
+- a **web dashboard** (`dashboard.py`, port 8000) for the team,
+- an **MCP server** (`mcp_server.py`, port 8765) for agents - Echo (the
+  Slack agent), Hermes, Claude Desktop/Code,
+- **CLI scripts** for loading data and one-off lookups.
 
-- `schema.sql` - `clients`, weekly tables per source (`ga4_weekly`,
-  `gsc_weekly`, `shopify_weekly`), `aeo_content_log` for the Reddit/YouTube/
-  blog content log, `ai_visibility_checks` for the AI visibility tool
-  data, and `shopify_report_sections` for the unsection-shaped
-  `-all-data.csv` reports.
-- `db.py` - the one place every DB connection comes from. Reads
-  connection details from `.env`.
-- `migrate.py` - applies `schema.sql`. Safe to re-run.
-- `seed.py` - inserts two example clients so foreign keys have something
-  to point at while testing.
-- `ingest_example.py` - the write pattern, worked example using GA4-shaped
-  data.
-- `query_example.py` - the read pattern: a cross-source trend query
-  joining GA4 + Shopify by client and week, the kind of thing an agent
-  would run.
-- `ingest_ai_visibility.py` - dynamic loader for the AI visibility tool's
-  three-files-per-client-per-week exports (see "AI visibility tool data"
-  below).
-- `ingest_shopify_reports.py` - loads the unsection-shaped `-all-data.csv`
-  reports into `shopify_report_sections` (see "Client report CSVs" below).
-- `dashboard.py` - FastAPI web dashboard (see "Web dashboard" below).
-- `client_report.py` - terminal lookup that prints both reports for one
-  client straight to the terminal (see "Terminal lookup" below).
-- `mcp_server.py` - MCP server exposing read-only tools over the same
-  data so agents can pull it without raw DB access (see "MCP server"
-  below).
-- `static/index.html` - the dashboard frontend (a single page that
-  fetches from `/api/*` and draws charts).
+Both servers run on the DigitalOcean droplet from `/root/database-AEO`.
 
-## Scope of what's actually in this repo
+## Layout
 
-This covers the piece that's explicitly yours: **the database and the
-connection layer.** It does not include live API pulls from GA4 / GSC /
-Shopify / any AI visibility tool - those need real API credentials you
-don't have wired up yet, and ownership of some of them (GA4/GSC/Shopify/AEO)
-isn't assigned to anyone yet either. What's here is the foundation everyone
-else's ingestion code plugs into.
+| File | What it does |
+|---|---|
+| `db.py` | The one place every DB connection comes from. Reads `.env`. Rows come back as dicts. |
+| `schema.sql` / `migrate.py` | Core schema; `migrate.py` applies it. Safe to re-run. |
+| `migrate_client_contexts.sql`, `migrate_kg.sql`, `migrate_hybrid_v1.sql` | Additive migrations for brand context (pgvector), the knowledge graph, and the graph ontology. Apply with `psql` after `migrate.py` on a fresh DB. |
+| `migrate_report_period.sql` | Historical hand-applied migration; already folded into `schema.sql`. |
+| `dashboard.py` | FastAPI app: JSON API + serves `index.html`, `reports.html`, `upload.html`. Also the n8n ingest endpoint. |
+| `mcp_server.py` | MCP server (Streamable HTTP, or stdio with `--stdio`). |
+| `ingest_*.py` | Loaders, one per source (see below). |
+| `client_context.py` | Shared embed + upsert helpers for brand-context docs. |
+| `kg.py`, `triplet_extraction.py`, `insights.py` | Knowledge graph: node backfill, similarity edges, triplet extraction, bottleneck/brief tools. |
+| `analyze_comments.py`, `comment_insights.py` | LLM pass over research comments, then topic clustering + content-gap finder. |
+| `client_report.py` | Terminal lookup: AI visibility summary + Shopify report for one client. |
+| `clients_snapshot.json` | Snapshot of the current client list. |
+| `desc_kg.py` | Prints the live `kg_*` table schema (debug helper). |
+| `deploy/` | systemd unit for the dashboard + install notes. |
+| `vendor/` | Chart.js, served locally to the dashboard. |
 
-`ingest_example.py` is a **template**, not a finished integration - it shows
-the insert pattern (a "week of numbers for a client" upsert, keyed so
-re-running it doesn't create duplicates) using made-up GA4-shaped numbers.
-The AI visibility tool side is already handled for real (see below).
-Zaryab's merge scripts for website categorization / topical relevance
-should follow the same upsert shape, into a new table if what he's
-merging doesn't fit the existing ones.
-
-## Running it
+## Setup
 
 ```bash
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-cp .env.example .env        # if .env.example isn't checked in, just create .env with the DB_* vars below
-# edit .env: either set DATABASE_URL, or fill in the DB_* values
-# (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
-
-python migrate.py
-python seed.py
-python ingest_example.py
-python query_example.py
 ```
 
-All of this has been run end-to-end against a live Postgres instance
-during testing, so the SQL and the Python are both confirmed working, not
-just written and hoped for.
+`.env` (never committed):
 
-## AI visibility tool data
+| Var | Purpose |
+|---|---|
+| `DATABASE_URL` | Postgres connection string (or set `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`) |
+| `UPLOAD_PASSPHRASE` | Required on every write path (uploads, n8n ingest, MCP ingest tools) when set |
+| `OPENAI_API_KEY` | `analyze_comments.py` |
+| `OPENROUTER_API_KEY` | Set in `.env`, but not read by any code in this repo |
 
-`ingest_ai_visibility.py` is a dynamic loader for the AI visibility tool's
-exports (the three-files-per-client-per-week pattern: one file per platform
-- AI Mode, GPT, Perplexity - named `{Client}_-_{Platform}_-_{YYYY-MM-DD}.xlsx`).
+Fresh database: `python migrate.py`, then apply the three additive
+`migrate_*.sql` files with `psql` (pgvector must be available).
 
-Drop any client's files into a folder and run:
+## Data model
+
+| Table | Holds | Loaded by |
+|---|---|---|
+| `clients` | One row per client (name, slug, manager, seo_manager) | auto-registered by every loader |
+| `client_aliases` | Alternate names that route to an existing client | by hand |
+| `removed_clients` | Clients that must never be re-registered | by hand (see "Removing a client") |
+| `ai_visibility_checks` | One row per client / platform / date / query: score, position, mentions, sources, raw output, `top_brand_attributes` | `ingest_ai_visibility.py`, upload box, n8n |
+| `shopify_report_sections` | Sections of `{client}-all-data.csv` reports, stored as-is (columns vary per client); `report_period` NULL = monthly | `ingest_shopify_reports.py`, upload box |
+| `shopify_weekly` | Shopify AI-channel sales (ChatGPT agentic sales etc.) | `ingest_shopify_ai.py` |
+| `ga4_weekly` | GA4 sessions + AI-referral breakdown per period (weekly or monthly, keyed on the full window; `metrics.period_kind`) | `ingest_ga4_weekly.py` |
+| `gsc_weekly` | Search Console clicks / impressions / CTR / position per period (weekly or monthly, keyed on the full window); breakdowns (branded vs non-branded, country, device, page, queries, AI features) in `metrics`. `metrics.internal_only` holds concern queries - never client-facing | `ingest_gsc_weekly.py` |
+| `research_sources` / `research_comments` | YouTube videos / Reddit threads and their comments | `ingest_reddit_csv.py`, `ingest_youtube_csv.py`, upload box, n8n |
+| `research_comment_analysis` | LLM-extracted questions, sentiment, topic tags per comment | `analyze_comments.py` |
+| `client_contexts` | Whole brand-context markdown docs + 384-dim embeddings | `ingest_client_context.py`, MCP `ingest_client_context` |
+| `kg_nodes` / `kg_edges` | Knowledge graph over the above | `kg.py`, `triplet_extraction.py`, MCP tools |
+| `website_categorisation` | Domain -> category lookup | external load |
+| `v_ai_visibility`, `v_ai_visibility_summary` (views) | Readable per-query rows / per-platform rollup for ad-hoc SQL; no app code uses them | `schema.sql` |
+| `aeo_content_log` | In the schema, **no loader yet - empty** | - |
+
+Every client foreign key is `ON DELETE CASCADE`. Re-running any loader
+on the same file updates rows rather than duplicating them.
+
+## Loading data
 
 ```bash
-python ingest_ai_visibility.py /path/to/folder
+python ingest_ai_visibility.py /path/to/folder        # {Client}_-_{Platform}_-_{YYYY-MM-DD}.xlsx
+python ingest_shopify_reports.py /path/to/folder      # {client}-all-data.csv
+python ingest_reddit_csv.py /path/to/folder           # {client}-reddit-comments.csv
+python ingest_youtube_csv.py /path/to/folder          # {client}-youtube-comments.csv
+python ingest_ga4_weekly.py [files...]                # default: monthly-pulls/ + weekly-pulls/
+python ingest_ga4_weekly.py --from-db                 # rebuild from ga4 sections in shopify_report_sections
+python ingest_shopify_ai.py [files...]                # same long-row CSV format as GA4
+python ingest_gsc_weekly.py [files...]                # gsc_* rows from the same pull CSVs
+python ingest_gsc_weekly.py --from-db                 # backfill from gsc_* sections in shopify_report_sections
+python ingest_client_context.py doc.md --client <slug|name|id> --type brand_voice
 ```
 
-- New clients are registered automatically from the filename - nothing to
-  set up per client first.
-- New platforms fall back to a reasonable auto-generated name if they're
-  not already known, so a tool update that adds a 4th platform doesn't
-  break this.
-- Re-running the same files updates rather than duplicates (same client +
-  platform + date + query = same row).
-- If a file's column layout doesn't match what's expected, it's skipped
-  with a clear message naming what's missing, rather than silently loading
-  bad data.
+- Clients are parsed from the filename and registered automatically.
+  Names are matched on a flattened key (lowercase, letters/digits only)
+  and through `client_aliases`, so spelling variants collapse to one
+  client. A squashed filename (`outdoorvitals`) gives a squashed name -
+  fix by hand: `UPDATE clients SET name = 'OutdoorVitals' WHERE slug = 'outdoorvitals';`
+- Unknown AI platforms get an auto-generated name instead of failing.
+- Files whose columns don't match are skipped with a message naming
+  what's missing.
 
-`query_ai_visibility_example.py` shows the payoff - average visibility
-score and brand position per platform, for one client:
+**Without Python:** the dashboard's upload page takes `.xlsx` (AI
+visibility) and the three CSV shapes above, dispatched by filename.
+
+**From n8n:** `POST /api/ingest/ai-visibility-row`,
+`/api/ingest/reddit-comment`, `/api/ingest/youtube-comment` take one row
+each as JSON (with `passphrase`).
+
+**Analysis passes** (re-runnable, only process what's new):
 
 ```bash
-python query_ai_visibility_example.py altenew
-```
-
-## Client report CSVs ("-all-data.csv")
-
-These aren't uniform, so don't expect a clean fixed schema here. Each
-file has its own "=== Section Name ===" blocks, and even a section every
-client has (Gsc Monthly) has different columns from one client to the
-next - `ingest_shopify_reports.py` handles that by storing each section
-as whatever columns/rows it actually has, tagged by client and section
-name, rather than forcing one shape onto data that doesn't have one.
-
-```bash
-python ingest_shopify_reports.py /path/to/folder
-```
-
-New clients register automatically from the filename
-(`{client}-all-data.csv`). One real limitation: if the filename has no
-separator between words (`outdoorvitals`, not `outdoor-vitals`), the
-client name gets stored as one squashed word ("Outdoorvitals") since
-there's no way to know the intended capitalization from a flattened
-lowercase string. Fix it by hand if the real name differs:
-```sql
-UPDATE clients SET name = 'OutdoorVitals' WHERE slug = 'outdoorvitals';
+python analyze_comments.py --client outdoor-vitals [--limit 50] [--reanalyze]
+python comment_insights.py topics --client outdoor-vitals
+python comment_insights.py gaps --client outdoor-vitals
+python kg.py backfill [--dry-run]
+python kg.py refresh-similar [--threshold 0.85]
 ```
 
 ## Web dashboard
 
-`dashboard.py` serves an actual browser dashboard - not just a script
-printing to a terminal. It shows, per client: a score card per platform
-(with a ring indicator), a bar chart comparing platforms, a panel of the
-top brands mentioned alongside this client, and a table of every query
-tested, expandable to see the full raw AI response and competitor
-analysis for that row.
-
 ```bash
-python dashboard.py
+python dashboard.py      # http://localhost:8000
 ```
 
-Then open `http://localhost:8000`. Pick a client from the dropdown in the
-top right - everything below updates to that client's data.
+Pages: `/` (per-client dashboard), `/reports.html` (weekly reports),
+`/upload.html` (upload). Only these three files and `/vendor` are
+served - never the repo directory.
 
-It's a small FastAPI app. Five JSON endpoints back a single static HTML
-page (`static/index.html`) that fetches from them and draws the chart
-with Chart.js:
+Read endpoints (all take `?client=<slug>`):
+`/api/clients`, `/api/summary`, `/api/queries`, `/api/mentions`,
+`/api/top-sources`, `/api/shopify-report`, `/api/report-weeks`,
+`/api/trend`, `/api/research-sources`, `/api/research-comments`,
+`/api/research-stats`, and `/reports/{client_slug}/{date}.json`.
+Feed endpoints for the live-data banner: `/api/recent-uploads`,
+`/api/latest-ingest`. Write endpoints: `POST /api/upload` plus the three
+n8n endpoints above.
 
-- `GET /api/clients` - every client (id, name, slug) for the dropdown.
-- `GET /api/summary?client=<slug>` - per-platform rollup (queries tested,
-  average visibility score, average brand position).
-- `GET /api/queries?client=<slug>` - every query row for that client
-  (platform, date, score, position, mentions, raw output, competitor
-  analysis).
-- `GET /api/mentions?client=<slug>&limit=6` - top non-self brands
-  mentioned across this client's AI responses, by count.
-- `POST /api/upload` - drag-and-drop upload of one or more AI visibility
-  export files (see "Adding clients without Python" below).
-
-Nothing here is specific to Altenew - add more clients via
-`ingest_ai_visibility.py` (or the upload box) and they show up in the
-dropdown automatically.
-
-This runs fine locally for now. Moving it to the VPS is the same command,
-just run there instead - though worth adding some form of access control
-before it's reachable on the open internet, since this is client data.
-That's not set up yet; flag it if/when this moves off your machine.
-
-### Adding clients without Python (for teammates)
-
-The dashboard has a "+ Add client" button in the top right. Click it,
-drag the client's `.xlsx` files into the box that appears, and click
-Upload - no terminal, no Python, nothing installed on their end beyond a
-browser. Each file gets checked and loaded the same way
-`ingest_ai_visibility.py` does it (it's the same code underneath), and
-the result shows per file - a green line for anything that loaded, a red
-line explaining why if something didn't match. The client picker updates
-automatically once it's done.
-
-Before this is live on the VPS for the team to use, set `UPLOAD_PASSPHRASE`
-in `.env` to some shared phrase your team knows - otherwise anyone with
-the URL can upload data, not just your team. Leave it unset for local
-testing; the upload box works without a passphrase until one is set.
+On the droplet it runs as `aeo-dashboard.service` (see `deploy/`).
 
 ## MCP server
 
-`mcp_server.py` is an MCP server that exposes read-only tools over the
-same data, so agents (Hermes, Claude Desktop, Claude Code, etc.) can
-pull reports without needing direct Postgres credentials on the host.
-Run it on whatever host sits next to the DB:
-
 ```bash
-python mcp_server.py          # 0.0.0.0:8765 by default
+python mcp_server.py           # Streamable HTTP on 0.0.0.0:8765
+python mcp_server.py --stdio   # for Claude Desktop (or MCP_TRANSPORT=stdio)
 ```
 
-Point an MCP client at the URL (Streamable HTTP transport) and it gets
-five tools, all JSON in, JSON out:
+On the droplet it runs as `aeo-mcp.service`. Most tools that take a
+`client` accept an id, slug or name fragment.
 
-- `list_clients()` - same as `GET /api/clients`.
-- `get_ai_visibility_summary(client)` - same per-platform rollup as the
-  dashboard.
-- `get_ai_visibility_queries(client, limit=200, platform=None,
-  date_from=None, date_to=None)` - the per-query rows, optionally
-  filtered.
-- `get_top_mentions(client, limit=10)` - same as the dashboard's
-  mentions panel.
-- `get_shopify_report(client)` - every section of that client's
-  `-all-data.csv` report.
+**Clients & profiles:** `list_clients`, `get_client_profile` (everything
+about one client in one call).
 
-All five are read-only - ingestion happens through the existing scripts
-or the dashboard upload box, not through MCP. The agent (reasoning LLM)
-is responsible for any "is this trending up?" verdict - no thresholds are
-hard-coded in the server itself.
+**AI visibility:** `get_ai_visibility_summary`, `get_ai_visibility_queries`,
+`get_top_mentions`, `get_weekly_ai_visibility_report`,
+`get_monthly_ai_visibility_report`, `get_all_clients_weekly_ai_visibility`
+(all clients, latest week - the Slack batch report).
 
-## Terminal lookup (no web UI)
+**Shopify & GA4:** `get_shopify_report`, `get_weekly_shopify_report`,
+`get_monthly_shopify_report`, `get_ga4_summary`.
 
-`client_report.py` prints both reports for one client straight to the
-terminal - the AI visibility summary and the full shopify report, every
-section, in one go:
+**Search Console:** `get_gsc_summary` (clicks, impressions, CTR, position,
+branded vs non-branded, AI-features impressions per period; optional
+breakdowns; concern queries only with `include_internal=True`).
+
+**Brand context:** `get_client_context`, `ingest_client_context`.
+
+**Knowledge graph & insights:** `get_related`, `find_similar_clients`,
+`refresh_similar_clients`, `add_edge`, `build_visibility_graph`,
+`get_visibility_bottlenecks`, `generate_content_brief`.
+
+**Ingest:** `ingest_file` (AI visibility .xlsx), `ingest_shopify_file`.
+
+Write tools check `UPLOAD_PASSPHRASE`. The tools return data only - any
+"is this trending up?" judgement is left to the calling agent.
+
+## Terminal lookup
 
 ```bash
 python client_report.py rootganic
-python client_report.py "outdoor vitals"   # matches by name, spacing doesn't matter
+python client_report.py "outdoor vitals"   # name match, spacing ignored
 ```
-
-## Moving this to the actual VPS
-
-Nothing above changes - point `.env` at wherever Postgres actually lives:
-
-- **Self-installed on the Droplet:** `apt install postgresql`, create a
-  dedicated role + database for this (don't run the app as the default
-  `postgres` superuser), fill in the `DB_*` vars.
-- **DigitalOcean managed Postgres:** copy the connection string it gives
-  you into `DATABASE_URL` and skip the `DB_*` vars entirely.
-
-Either way, run `python migrate.py` once against that database and you're
-live. If you also expose `mcp_server.py` and `dashboard.py` on the VPS,
-front both with whatever auth your team uses - same caveat as the
-dashboard: this is client data, don't make it public.
 
 ## Removing a client
 
-Ingest auto-registers any client name it sees, so deleting a client's row
-on its own isn't enough - the next n8n run or upload with that name brings
-it back. To remove one for good:
+Loaders auto-register any client name they see, so deleting the row
+alone isn't enough - the next n8n run or upload brings it back:
 
-1. Back up its rows into `<table>_backup_<reason>` tables (see below).
-2. `DELETE FROM clients WHERE id = ...` - every table's foreign key is
-   `ON DELETE CASCADE`, so its data goes with it.
-3. Add its flattened name (lowercase, letters/digits only, e.g.
-   `livingwellwithdrmichelle`) to `removed_clients`. Every ingest path
-   then refuses it: n8n rows get a 400, files are skipped with a reason.
-   Delete the `removed_clients` row to bring the client back.
+1. Back up its rows into `<table>_backup_<reason>` tables (below).
+2. `DELETE FROM clients WHERE id = ...` - cascades to all its data.
+3. Add its flattened name (e.g. `livingwellwithdrmichelle`) to
+   `removed_clients`. Every ingest path then refuses it (n8n gets a 400,
+   files are skipped with a reason). Delete that row to allow it back.
 
 ## Backup tables (`*_backup_*`)
 
 The live DB holds snapshot tables named `<table>_backup_<what happened>`,
 e.g. `clients_backup_merge89` or
-`ai_visibility_checks_backup_removed_babyrx_livingwell_20261111`. Each is a
-copy of the rows taken right before a client merge (`merge<id>`), removal
-(`removed_<client or id>`) or delete (`del<id>`). They're kept on purpose
-so any of those can be undone - don't drop them. No code reads them, and
-they're not in `schema.sql`. Older ones still have the pre-rename
-`competitor_analysis` column.
+`ai_visibility_checks_backup_removed_babyrx_livingwell_20261111`. Each is
+a copy taken right before a merge (`merge<id>`), removal
+(`removed_<client or id>`) or delete (`del<id>`), so it can be undone -
+don't drop them. No code reads them and they're not in `schema.sql`.
+Older ones still have the pre-rename `competitor_analysis` column.
 
-## Not built yet, on purpose
+## Known gaps
 
-- No live pulls from GA4 / GSC / Shopify. That needs real API credentials,
-  and ownership of those sources isn't assigned to anyone yet either.
-  AI visibility is the one source that's fully wired up, since real
-  exports were available to build against.
+- **Read access is open.** Dashboard and MCP read endpoints have no auth;
+  only writes check `UPLOAD_PASSPHRASE`. Keep the ports behind a firewall
+  or add auth before exposing them.
+- **No live API pulls** from GA4 / GSC / Shopify - data arrives as
+  exported files or via n8n.
+- **The AEO content log** has a table but no loader.
+- **No dashboard panel reads `gsc_weekly` yet** (the MCP tool does).
