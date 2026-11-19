@@ -83,6 +83,33 @@ ALTER TABLE gsc_weekly DROP CONSTRAINT IF EXISTS gsc_weekly_client_id_week_start
 CREATE UNIQUE INDEX IF NOT EXISTS gsc_weekly_client_id_week_start_week_end_key
     ON gsc_weekly (client_id, week_start, week_end);
 
+-- One row per item in a GSC breakdown for one gsc_weekly period: a country,
+-- device, page, query, search-appearance type, or AI-features country/
+-- device/page. Lets agents ask for exactly "top pages" or "branded queries"
+-- instead of getting every breakdown at once. kind = the pull source minus
+-- 'gsc_' (country, device, page, query_branded, query_nonbranded,
+-- query_concern, search_appearance, ai_features_country, ai_features_device,
+-- ai_features_page). internal_only rows (query_concern) must never be
+-- client-facing without Julian. Loaded by ingest_gsc_weekly.py.
+CREATE TABLE IF NOT EXISTS gsc_breakdowns (
+    id BIGSERIAL PRIMARY KEY,
+    client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    week_start DATE NOT NULL,
+    week_end DATE NOT NULL,
+    kind TEXT NOT NULL,
+    item TEXT NOT NULL,
+    clicks INT,
+    impressions INT,
+    ctr_pct NUMERIC(6,2),
+    avg_position NUMERIC(6,2),
+    internal_only BOOLEAN NOT NULL DEFAULT false,
+    note TEXT,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (client_id, week_start, week_end, kind, item)
+);
+CREATE INDEX IF NOT EXISTS idx_gsc_breakdowns_lookup
+    ON gsc_breakdowns (client_id, kind, week_start, week_end);
+
 CREATE TABLE IF NOT EXISTS shopify_weekly (
     id SERIAL PRIMARY KEY,
     client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -132,17 +159,6 @@ BEGIN
             RENAME COLUMN competitor_analysis TO top_brand_attributes;
     END IF;
 END $$;
-
-CREATE TABLE IF NOT EXISTS aeo_content_log (
-    id SERIAL PRIMARY KEY,
-    client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
-    platform TEXT NOT NULL CHECK (platform IN ('reddit', 'youtube', 'blog')),
-    url TEXT,
-    title TEXT,
-    published_at DATE,
-    metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
-    ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 
 -- Raw comment/post research data pulled from Reddit and YouTube export
 -- tools (see ingest_reddit_csv.py / ingest_youtube_csv.py). One row per
@@ -250,7 +266,6 @@ CREATE INDEX IF NOT EXISTS idx_gsc_client_week ON gsc_weekly (client_id, week_st
 CREATE INDEX IF NOT EXISTS idx_shopify_client_week ON shopify_weekly (client_id, week_start);
 CREATE INDEX IF NOT EXISTS idx_ai_visibility_client_date ON ai_visibility_checks (client_id, check_date);
 CREATE INDEX IF NOT EXISTS idx_ai_visibility_platform ON ai_visibility_checks (platform);
-CREATE INDEX IF NOT EXISTS idx_aeo_client_platform ON aeo_content_log (client_id, platform);
 CREATE INDEX IF NOT EXISTS idx_shopify_sections_client ON shopify_report_sections (client_id);
 CREATE INDEX IF NOT EXISTS idx_research_sources_client ON research_sources (client_id);
 CREATE INDEX IF NOT EXISTS idx_research_comments_client ON research_comments (client_id);
@@ -286,3 +301,7 @@ SELECT c.slug AS client,
 FROM ai_visibility_checks a
 JOIN clients c ON c.id = a.client_id
 GROUP BY c.slug, a.platform;
+
+-- Snapshot tables taken before client merges / removals live in their own
+-- schema so they stay out of the main table list (see README "Backup tables").
+CREATE SCHEMA IF NOT EXISTS archive;

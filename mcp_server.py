@@ -40,13 +40,16 @@ mcp = FastMCP(
     instructions=(
         "Agency-wide source of truth for client information. When asked "
         "anything about a client, START with get_client_profile(client) — "
-        "it returns everything in one call: AI visibility scores, "
-        "competitors, Shopify report index, and brand voice/ICP docs. "
+        "it returns a compact overview: AI visibility scores, competitors, "
+        "latest GA4/GSC totals, Shopify report periods, and the list of "
+        "brand docs. Then call ONE focused tool for the detail asked for. "
         "Narrower tools: list_clients (roster), "
         "get_ai_visibility_summary / get_ai_visibility_queries (visibility "
         "numbers and raw AI answers), get_top_mentions (competitor brands), "
         "get_ga4_summary (site traffic), get_gsc_summary (Google organic "
-        "search), get_shopify_report (raw report sections), "
+        "search totals), get_gsc_breakdown (one slice: top pages, branded / "
+        "non-branded queries, countries, devices, AI-Overview pages), "
+        "get_shopify_report (Shopify sections), "
         "get_client_context (one context doc type). Write tools: "
         "ingest_file (.xlsx visibility audit), ingest_shopify_file (.csv "
         "all-data report), ingest_client_context (save brand voice/ICP docs). "
@@ -114,6 +117,12 @@ def _resolve_client(cur, query: str) -> Optional[dict]:
     return cur.fetchone()
 
 
+# shopify_report_sections also stores the GA4 / GSC / meta / AI-snapshot
+# parts of each pull. Those have their own tables and tools, and
+# gsc_query_concern is internal-only, so Shopify tools exclude them.
+_SHOPIFY_SECTION_SQL = "section_name !~ ' (ga4|gsc_|meta$|ai_snapshot)'"
+
+
 def _num(val):
     if val is None:
         return None
@@ -159,14 +168,14 @@ def get_client_profile(client: Any) -> dict:
     know about client X" tool. Assembles in one response: basic info
     (name, slug, manager), AI visibility summary per platform (scores,
     positions, query counts, date range), top competitor brands
-    mentioned alongside them, their Shopify report section index, all
-    brand-context documents (brand voice, ICP, journey maps, case
-    studies). Use this for: "tell me everything about Winona", "give
-    me the full picture on client X", "brief me on [client]" — any
-    question that needs the whole story. For a single narrow slice
-    (e.g. just visibility numbers or just the brand voice doc), the
-    focused tools get_ai_visibility_summary / get_client_context are
-    cheaper.
+    mentioned alongside them, the latest GA4 and Google Search Console
+    totals, which Shopify report periods exist, and the LIST of
+    brand-context documents (type, title, size - not their text).
+    Use this for: "tell me everything about Winona", "brief me on
+    [client]". It is a compact overview: for details call the focused
+    tool - get_client_context (a doc's full text), get_ga4_summary,
+    get_gsc_summary / get_gsc_breakdown, get_ai_visibility_summary,
+    get_monthly_shopify_report.
     """
     import json as _json
 
@@ -216,23 +225,41 @@ def get_client_profile(client: Any) -> dict:
             top_mentions = [{"name": n, "count": cnt} for n, cnt in
                             sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:10]]
 
-            # --- Shopify report section index
-            cur.execute(
-                """
-                SELECT section_name, report_period, source_file,
-                       jsonb_array_length(columns) AS n_columns,
-                       jsonb_array_length(rows) AS n_rows, ingested_at
-                FROM shopify_report_sections WHERE client_id = %s
-                ORDER BY report_period NULLS FIRST, section_name;
-                """, (cid,))
-            shopify_sections = cur.fetchall()
-            for s in shopify_sections:
-                s["ingested_at"] = s["ingested_at"].isoformat() if s["ingested_at"] else None
+            # --- latest GA4 / GSC period of each kind (totals only)
+            def _latest(table, cols, kind_sql):
+                cur.execute(
+                    f"""SELECT week_start, week_end, {cols} FROM {table}
+                         WHERE client_id = %s AND {kind_sql}
+                         ORDER BY week_start DESC, week_end DESC LIMIT 1""", (cid,))
+                r = cur.fetchone()
+                if r:
+                    r["week_start"] = r["week_start"].isoformat()
+                    r["week_end"] = r["week_end"].isoformat()
+                    for k in list(r):
+                        if hasattr(r[k], "as_integer_ratio") and not isinstance(r[k], (int, bool)):
+                            r[k] = _num(r[k])  # Decimal -> float; ints stay ints
+                return r
+            ga4_cols = ("sessions, conversions AS key_events, "
+                        "coalesce((metrics->>'invalid')::boolean, false) AS invalid")
+            gsc_cols = "clicks, impressions, ctr AS ctr_pct, avg_position"
+            traffic = {
+                "ga4_latest_month": _latest("ga4_weekly", ga4_cols, "week_end - week_start > 6"),
+                "ga4_latest_week": _latest("ga4_weekly", ga4_cols, "week_end - week_start <= 6"),
+                "gsc_latest_month": _latest("gsc_weekly", gsc_cols, "week_end - week_start > 6"),
+                "gsc_latest_week": _latest("gsc_weekly", gsc_cols, "week_end - week_start <= 6"),
+            }
 
-            # --- all brand-context docs (every type)
+            # --- which Shopify report periods exist (no section data)
+            cur.execute(
+                f"""SELECT DISTINCT report_period FROM shopify_report_sections
+                     WHERE client_id = %s AND {_SHOPIFY_SECTION_SQL}
+                     ORDER BY report_period""", (cid,))
+            shopify_periods = [r["report_period"] for r in cur.fetchall()]
+
+            # --- brand-context docs: list only, fetch text with get_client_context
             cur.execute(
                 """
-                SELECT id, context_type, title, content, source_file, ingested_at
+                SELECT context_type, title, length(content) AS chars, ingested_at
                 FROM client_contexts WHERE client_id = %s
                 ORDER BY context_type, ingested_at DESC;
                 """, (cid,))
@@ -246,13 +273,12 @@ def get_client_profile(client: Any) -> dict:
             "platforms": visibility,
             "top_competitor_brands": top_mentions,
         },
-        "shopify_report": {
-            "section_count": len(shopify_sections),
-            "sections": shopify_sections,
-        },
+        "traffic": traffic,
+        "shopify_report_periods": shopify_periods,
         "brand_contexts": {
             "count": len(contexts),
             "docs": contexts,
+            "note": "titles only - call get_client_context(client, context_type) for the text",
         },
     }
 
@@ -380,13 +406,11 @@ def get_top_mentions(client: Any, limit: int = 10) -> list[dict]:
 @mcp.tool()
 def get_shopify_report(client: Any) -> dict:
     """
-    The full multi-section Shopify/web report for one client (from the
-    '-all-data.csv' upload): SEO/GSC data, sales, weekly AEO summaries —
-    each section with its own columns and rows. Returns an index when
-    there are many sections; pass get_client_profile first to see the
-    section list. Natural questions this answers: "what's X's organic
-    traffic?", "show me X's Shopify numbers", "what do the weekly
-    reports say about X?", "X's search console performance".
+    The raw Shopify sections of one client's uploaded reports (sales,
+    AI-channel sales, products), each with its own columns and rows:
+    "show me X's Shopify numbers". GA4 traffic and Google Search Console
+    data are NOT here - use get_ga4_summary, get_gsc_summary and
+    get_gsc_breakdown for those.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -398,6 +422,7 @@ def get_shopify_report(client: Any) -> dict:
                 SELECT section_name, report_period, columns, rows, source_file, ingested_at
                 FROM shopify_report_sections
                 WHERE client_id = %(cid)s
+                  AND section_name !~ ' (ga4|gsc_|meta$|ai_snapshot)'
                 ORDER BY report_period NULLS FIRST, id;
                 """,
                 {"cid": c["id"]},
@@ -618,14 +643,8 @@ def get_ga4_summary(client: Any, limit: int = 12) -> dict:
             "periods": periods}
 
 
-_GSC_BREAKDOWNS = ("country", "device", "page", "query_branded", "query_nonbranded",
-                   "search_appearance", "ai_features_country", "ai_features_device",
-                   "ai_features_page")
-
-
 @mcp.tool()
 def get_gsc_summary(client: Any, limit: int = 12, period_kind: str = "",
-                    include_breakdowns: bool = False,
                     include_internal: bool = False) -> dict:
     """
     Google Search Console (organic search) summary for one client: clicks,
@@ -640,12 +659,11 @@ def get_gsc_summary(client: Any, limit: int = 12, period_kind: str = "",
     overlap, so totals are given per kind - never add the two together.
     period_kind='weekly' or 'monthly' returns only that kind.
 
-    include_breakdowns=True adds per-period top countries, devices,
-    pages, branded / non-branded queries, search appearance, and
-    AI-features by country/device/page (larger response).
+    For top pages, queries, countries, devices or AI-features pages use
+    get_gsc_breakdown instead - this tool returns totals only.
 
-    include_internal=True adds branded *concern* queries (e.g. "<brand>
-    scam", "cancel <brand>"). These are INTERNAL ONLY - never put them in
+    include_internal=True adds branded *concern* query totals (e.g.
+    "<brand> scam", "cancel <brand>"). INTERNAL ONLY - never put them in
     anything client-facing without Julian's sign-off. Leave it False
     unless the user explicitly asks for concern queries.
 
@@ -706,14 +724,12 @@ def get_gsc_summary(client: Any, limit: int = 12, period_kind: str = "",
                 + ((m.get("ai_features") or {}).get("caveats") or [])
             )) or None,
         }
-        if include_breakdowns:
-            p["breakdowns"] = {k: (m.get(k) or {}).get("rows") for k in _GSC_BREAKDOWNS if m.get(k)}
         if include_internal and m.get("internal_only"):
             io = m["internal_only"]
             p["internal_only"] = {
                 "WARNING": "INTERNAL ONLY - never client-facing without Julian",
                 "branded_concern_totals": (io.get("web") or {}).get("branded_concern_queries"),
-                "concern_queries": (io.get("query_concern") or {}).get("rows"),
+                "concern_queries": "use get_gsc_breakdown(kind='query_concern', include_internal=True)",
             }
         periods.append(p)
 
@@ -731,6 +747,133 @@ def get_gsc_summary(client: Any, limit: int = 12, period_kind: str = "",
             "totals": totals,
             "periods": periods}
 
+
+
+GSC_BREAKDOWN_KINDS = {
+    "query_branded": "top branded search queries (brand name in the query)",
+    "query_nonbranded": "top non-branded search queries",
+    "page": "top landing pages",
+    "country": "top countries",
+    "device": "mobile / desktop / tablet split",
+    "search_appearance": "search result features (rich results, translated results, ...)",
+    "ai_features_page": "pages getting Google AI Overviews / AI Mode impressions",
+    "ai_features_country": "AI-features impressions by country",
+    "ai_features_device": "AI-features impressions by device",
+    "query_concern": "INTERNAL ONLY branded concern queries (needs include_internal=True)",
+}
+
+
+@mcp.tool()
+def get_gsc_breakdown(client: Any, kind: str, period: str = "latest",
+                      period_kind: str = "monthly", limit: int = 20,
+                      include_internal: bool = False) -> dict:
+    """
+    ONE specific Google Search Console breakdown for one client and one
+    period - use this instead of pulling everything when the user asks
+    for a specific slice: "top pages for Winona last month", "Outdoor
+    Vitals' top non-branded queries this week", "which countries does
+    Rootganic get search clicks from", "mobile vs desktop for Jamie Anne",
+    "which Winona pages show up in AI Overviews".
+
+    kind (required) - one of:
+      query_branded, query_nonbranded, page, country, device,
+      search_appearance, ai_features_page, ai_features_country,
+      ai_features_device, query_concern.
+    period - 'latest' (default), a month '2026-10', an ISO week '2026-W42',
+      or any date '2026-10-14' (the period of period_kind containing it).
+    period_kind - 'monthly' (default) or 'weekly'.
+    limit - max rows (default 20). Rows are sorted by clicks (impressions
+      for ai_features_*). The pulls only keep the top 5-20 items per
+      breakdown, so this is a top-N list, not every page/query.
+
+    query_concern rows (e.g. "<brand> scam", "cancel <brand>") are INTERNAL
+    ONLY and returned only with include_internal=True - never put them in
+    anything client-facing without Julian's sign-off.
+    """
+    from datetime import date as _d
+    kind = (kind or "").strip().lower()
+    if kind not in GSC_BREAKDOWN_KINDS:
+        return {"error": f"unknown kind '{kind}'", "valid_kinds": GSC_BREAKDOWN_KINDS}
+    if kind == "query_concern" and not include_internal:
+        return {"error": "query_concern is INTERNAL ONLY - pass include_internal=True "
+                         "only if the user explicitly asked for concern queries"}
+    pk = (period_kind or "monthly").strip().lower()
+    if pk not in ("monthly", "weekly"):
+        return {"error": "period_kind must be 'monthly' or 'weekly'"}
+    kind_sql = "week_end - week_start > 6" if pk == "monthly" else "week_end - week_start <= 6"
+
+    per = (period or "latest").strip()
+    target = None
+    try:
+        if per.lower() == "latest":
+            target = None
+        elif re.fullmatch(r"\d{4}-\d{2}", per):
+            if pk == "weekly":
+                return {"error": "a month like '2026-10' needs period_kind='monthly'"}
+            target = _d.fromisoformat(per + "-01")
+        elif re.fullmatch(r"\d{4}-?W\d{1,2}", per, re.I):
+            y, w = re.split(r"-?W", per.upper())
+            target = _d.fromisocalendar(int(y), int(w), 1)
+        else:
+            target = _d.fromisoformat(per[:10])
+    except ValueError:
+        return {"error": f"can't read period '{period}'",
+                "hint": "use 'latest', '2026-10', '2026-W42' or '2026-10-14'"}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cli = _resolve_client(cur, client)
+            if not cli:
+                return {"error": f"no client matching '{client}'",
+                        "hint": "call list_clients for valid slugs"}
+            if target is None:
+                cur.execute(
+                    f"""SELECT week_start, week_end FROM gsc_weekly
+                         WHERE client_id = %s AND {kind_sql}
+                         ORDER BY week_start DESC, week_end DESC LIMIT 1""", (cli["id"],))
+            else:
+                cur.execute(
+                    f"""SELECT week_start, week_end FROM gsc_weekly
+                         WHERE client_id = %s AND {kind_sql}
+                           AND week_start <= %s AND week_end >= %s
+                         ORDER BY week_end - week_start, week_start DESC LIMIT 1""",
+                    (cli["id"], target, target))
+            per_row = cur.fetchone()
+            if not per_row:
+                cur.execute(
+                    f"""SELECT week_start, week_end FROM gsc_weekly
+                         WHERE client_id = %s AND {kind_sql}
+                         ORDER BY week_start DESC LIMIT 12""", (cli["id"],))
+                avail = [f"{r['week_start']}..{r['week_end']}" for r in cur.fetchall()]
+                return {"client": cli["name"], "slug": cli["slug"], "kind": kind, "rows": [],
+                        "note": f"no {pk} GSC period matching '{period}'",
+                        "available_periods": avail or "none (GSC access may be pending)"}
+            order = ("impressions DESC NULLS LAST" if kind.startswith("ai_features")
+                     else "clicks DESC NULLS LAST, impressions DESC NULLS LAST")
+            cur.execute(
+                f"""SELECT item, clicks, impressions, ctr_pct, avg_position, note
+                      FROM gsc_breakdowns
+                     WHERE client_id = %s AND week_start = %s AND week_end = %s AND kind = %s
+                       AND (internal_only = false OR %s)
+                     ORDER BY {order} LIMIT %s""",
+                (cli["id"], per_row["week_start"], per_row["week_end"], kind,
+                 include_internal, max(1, min(int(limit), 100))))
+            rows = cur.fetchall()
+    notes = sorted({r.pop("note") for r in rows if r.get("note")})
+    for r in rows:
+        r.pop("note", None)
+        r["ctr_pct"] = _num(r["ctr_pct"])
+        r["avg_position"] = _num(r["avg_position"])
+        if kind.startswith("ai_features"):
+            r.pop("clicks"); r.pop("ctr_pct"); r.pop("avg_position")
+    out = {"client": cli["name"], "slug": cli["slug"], "kind": kind,
+           "description": GSC_BREAKDOWN_KINDS[kind],
+           "period_start": per_row["week_start"].isoformat(),
+           "period_end": per_row["week_end"].isoformat(),
+           "period_kind": pk, "rows": rows, "notes": notes or None}
+    if kind == "query_concern":
+        out["WARNING"] = "INTERNAL ONLY - never client-facing without Julian"
+    return out
 
 
 def _period_bounds(period: str):
@@ -1025,9 +1168,8 @@ def get_monthly_shopify_report(client: Any, month: str = "latest") -> dict:
     """
     FULL monthly Shopify/e-commerce report for one client: month total
     orders, revenue, AOV, net items sold, the per-week breakdown inside
-    the month, plus the full monthly report sections (SEO/GSC, GA4,
-    AI snapshot, sales) from the '-all-data.csv' upload when they exist
-    for that month. 'month' accepts '2026-10' style or 'latest' (default
+    the month, plus that month's Shopify report sections when they
+    exist (GA4 / GSC are separate tools: get_ga4_summary, get_gsc_summary). 'month' accepts '2026-10' style or 'latest' (default
     = most recent month with data). Natural questions: "give me Winona's
     monthly Shopify report", "The Swell Score September sales".
     """
@@ -1084,6 +1226,7 @@ def get_monthly_shopify_report(client: Any, month: str = "latest") -> dict:
                 """SELECT section_name, columns, rows
                    FROM shopify_report_sections
                    WHERE client_id=%(cid)s AND report_period=%(m)s
+                     AND section_name !~ ' (ga4|gsc_|meta$|ai_snapshot)'
                    ORDER BY section_name""",
                 {"cid": c["id"], "m": mlabel})
             sections = cur.fetchall()
