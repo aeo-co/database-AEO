@@ -50,6 +50,9 @@ mcp = FastMCP(
         "search totals), get_gsc_breakdown (one slice: top pages, branded / "
         "non-branded queries, countries, devices, AI-Overview pages), "
         "get_shopify_report (Shopify sections), "
+        "get_research_overview / get_research_questions / "
+        "get_research_topics / get_research_comments / get_research_sources "
+        "(what the audience says and asks on Reddit / YouTube), "
         "get_client_context (one context doc type). Write tools: "
         "ingest_file (.xlsx visibility audit), ingest_shopify_file (.csv "
         "all-data report), ingest_client_context (save brand voice/ICP docs). "
@@ -169,13 +172,14 @@ def get_client_profile(client: Any) -> dict:
     (name, slug, manager), AI visibility summary per platform (scores,
     positions, query counts, date range), top competitor brands
     mentioned alongside them, the latest GA4 and Google Search Console
-    totals, which Shopify report periods exist, and the LIST of
+    totals, Reddit / YouTube research counts, which Shopify report
+    periods exist, and the LIST of
     brand-context documents (type, title, size - not their text).
     Use this for: "tell me everything about Winona", "brief me on
     [client]". It is a compact overview: for details call the focused
     tool - get_client_context (a doc's full text), get_ga4_summary,
     get_gsc_summary / get_gsc_breakdown, get_ai_visibility_summary,
-    get_monthly_shopify_report.
+    get_research_overview, get_monthly_shopify_report.
     """
     import json as _json
 
@@ -256,6 +260,15 @@ def get_client_profile(client: Any) -> dict:
                      ORDER BY report_period""", (cid,))
             shopify_periods = [r["report_period"] for r in cur.fetchall()]
 
+            # --- audience research: counts only, detail via get_research_* tools
+            cur.execute(
+                """SELECT (SELECT count(*) FROM research_sources WHERE client_id = %(c)s) AS threads_and_videos,
+                          (SELECT count(*) FROM research_comments WHERE client_id = %(c)s) AS comments,
+                          (SELECT count(*) FROM research_comment_analysis
+                            WHERE client_id = %(c)s AND is_question) AS questions_extracted""",
+                {"c": cid})
+            research = cur.fetchone()
+
             # --- brand-context docs: list only, fetch text with get_client_context
             cur.execute(
                 """
@@ -275,6 +288,7 @@ def get_client_profile(client: Any) -> dict:
         },
         "traffic": traffic,
         "shopify_report_periods": shopify_periods,
+        "audience_research": research if research["comments"] else None,
         "brand_contexts": {
             "count": len(contexts),
             "docs": contexts,
@@ -1324,6 +1338,309 @@ def get_all_clients_weekly_ai_visibility(week: str = "latest") -> dict:
         "clients_without_data": sum(1 for r in out if "note" in r),
         "results": out,
     }
+
+
+# ---------------------------------------------------------------------------
+# Audience research (Reddit / YouTube comments + LLM analysis)
+# research_sources -> research_comments -> research_comment_analysis.
+# Plain SQL only - no embedding model is loaded, so these stay fast and safe
+# on the 1GB droplet. Low-signal / spam comments are never analyzed, so any
+# filter that goes through the analysis (questions, topics, sentiment,
+# brand) already excludes them.
+# ---------------------------------------------------------------------------
+
+def _research_client(cur, client):
+    cli = _resolve_client(cur, client)
+    if not cli:
+        return None, {"error": f"no client matching '{client}'",
+                      "hint": "call list_clients for valid slugs"}
+    return cli, None
+
+
+def _platform_ok(platform):
+    p = (platform or "").strip().lower()
+    if p not in ("", "reddit", "youtube"):
+        return None, {"error": "platform must be 'reddit', 'youtube' or empty"}
+    return p, None
+
+
+def _coverage(cur, cid):
+    cur.execute(
+        """SELECT (SELECT count(*) FROM research_comments WHERE client_id = %(c)s) AS comments,
+                  (SELECT count(*) FROM research_comment_analysis WHERE client_id = %(c)s) AS analyzed""",
+        {"c": cid})
+    r = cur.fetchone()
+    pct = round(100 * r["analyzed"] / r["comments"], 1) if r["comments"] else None
+    out = {"comments": r["comments"], "analyzed": r["analyzed"], "analyzed_pct": pct}
+    if pct is not None and pct < 90:
+        out["warning"] = (f"only {pct}% of comments are analyzed - questions / topics / "
+                          "sentiment reflect that subset, not all comments")
+    return out
+
+
+def _iso(v):
+    return v.isoformat() if hasattr(v, "isoformat") else v
+
+
+@mcp.tool()
+def get_research_overview(client: Any) -> dict:
+    """
+    Compact overview of the Reddit / YouTube audience research for one
+    client: how many threads/videos and comments, which subreddits /
+    channels it comes from, date range, how many real questions were
+    extracted, overall sentiment split, the brands people talk about most
+    (with positive/negative counts), and the top discussion topics.
+    Start here for "what are people saying about Winona online?",
+    "what does the Reddit research show for Outdoor Vitals?". Then use
+    get_research_questions / get_research_topics / get_research_comments /
+    get_research_sources for the detail.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cli, err = _research_client(cur, client)
+            if err:
+                return err
+            cid = cli["id"]
+            cur.execute(
+                """SELECT platform, count(*) AS sources,
+                          min(published_at) AS first_published, max(published_at) AS last_published,
+                          max(fetched_at) AS last_fetched
+                     FROM research_sources WHERE client_id = %s GROUP BY platform""", (cid,))
+            sources = cur.fetchall()
+            if not sources:
+                return {"client": cli["name"], "slug": cli["slug"],
+                        "note": "no Reddit / YouTube research ingested for this client"}
+            for s in sources:
+                for k in ("first_published", "last_published", "last_fetched"):
+                    s[k] = _iso(s[k])
+            cur.execute(
+                """SELECT container AS subreddit, count(*) AS threads
+                     FROM research_sources
+                    WHERE client_id = %s AND platform = 'reddit' AND container IS NOT NULL
+                    GROUP BY container ORDER BY threads DESC LIMIT 8""", (cid,))
+            communities = cur.fetchall()
+            coverage = _coverage(cur, cid)
+            cur.execute(
+                """SELECT count(*) FILTER (WHERE is_question) AS questions,
+                          count(*) FILTER (WHERE sentiment = 'positive') AS positive,
+                          count(*) FILTER (WHERE sentiment = 'negative') AS negative,
+                          count(*) FILTER (WHERE sentiment = 'neutral') AS neutral,
+                          count(*) FILTER (WHERE sentiment = 'mixed') AS mixed
+                     FROM research_comment_analysis WHERE client_id = %s""", (cid,))
+            agg = cur.fetchone()
+            cur.execute(
+                """SELECT mode() WITHIN GROUP (ORDER BY sentiment_target) AS brand, count(*) AS mentions,
+                          count(*) FILTER (WHERE sentiment = 'positive') AS positive,
+                          count(*) FILTER (WHERE sentiment = 'negative') AS negative
+                     FROM research_comment_analysis
+                    WHERE client_id = %s AND sentiment_target IS NOT NULL
+                    GROUP BY lower(sentiment_target)
+                    ORDER BY mentions DESC LIMIT 10""", (cid,))
+            brands = cur.fetchall()
+            cur.execute(
+                """SELECT lower(t.tag) AS topic, count(*) AS comments
+                     FROM research_comment_analysis a, jsonb_array_elements_text(a.topics) t(tag)
+                    WHERE a.client_id = %s GROUP BY 1 ORDER BY 2 DESC LIMIT 10""", (cid,))
+            topics = cur.fetchall()
+    return {"client": cli["name"], "slug": cli["slug"],
+            "sources_by_platform": sources,
+            "top_subreddits": communities,
+            "coverage": coverage,
+            "questions_extracted": agg["questions"],
+            "sentiment": {k: agg[k] for k in ("positive", "negative", "neutral", "mixed")},
+            "most_discussed_brands": brands,
+            "top_topics": topics}
+
+
+@mcp.tool()
+def get_research_questions(client: Any, search: str = "", topic: str = "",
+                           platform: str = "", limit: int = 20) -> dict:
+    """
+    Real questions the client's audience asks on Reddit / YouTube,
+    extracted from comments and rewritten as clean standalone questions,
+    most-upvoted first (duplicates merged). Answers "what questions do
+    people ask about menopause HRT?" (Winona), "what do hikers ask about
+    sleeping bags?" (Outdoor Vitals) - great raw material for FAQ and
+    content ideas.
+    search - keyword(s) that must appear in the question, e.g. 'price'.
+    topic - only questions tagged with this topic (see get_research_topics).
+    platform - 'reddit', 'youtube' or empty for both.
+    Each question comes with its upvote score and the thread/video it
+    came from.
+    """
+    p, err = _platform_ok(platform)
+    if err:
+        return err
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cli, err = _research_client(cur, client)
+            if err:
+                return err
+            cur.execute(
+                """SELECT DISTINCT ON (lower(a.question_text))
+                          a.question_text AS question, rc.score, rc.platform,
+                          rs.title AS source_title, rs.url AS source_url, rs.container AS subreddit,
+                          a.topics
+                     FROM research_comment_analysis a
+                     JOIN research_comments rc ON rc.id = a.comment_id
+                     JOIN research_sources rs ON rs.id = rc.source_id
+                    WHERE a.client_id = %(c)s AND a.is_question AND a.question_text IS NOT NULL
+                      AND (%(p)s = '' OR rc.platform = %(p)s)
+                      AND (%(s)s = '' OR a.question_text ILIKE '%%' || %(s)s || '%%')
+                      AND (%(t)s = '' OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.topics) x(tag)
+                                                  WHERE lower(x.tag) = lower(%(t)s)))
+                    ORDER BY lower(a.question_text), rc.score DESC NULLS LAST""",
+                {"c": cli["id"], "p": p, "s": (search or "").strip(), "t": (topic or "").strip()})
+            rows = cur.fetchall()
+            coverage = _coverage(cur, cli["id"])
+    rows.sort(key=lambda r: -(r["score"] or 0))
+    return {"client": cli["name"], "slug": cli["slug"],
+            "filters": {"search": search or None, "topic": topic or None, "platform": p or None},
+            "matching_questions": len(rows),
+            "questions": rows[:max(1, min(int(limit), 100))],
+            "coverage": coverage}
+
+
+@mcp.tool()
+def get_research_topics(client: Any, platform: str = "", limit: int = 20) -> dict:
+    """
+    What the client's audience talks about on Reddit / YouTube: the most
+    common discussion topics (e.g. 'price', 'durability', 'side
+    effects'), each with how many comments, how many are questions, the
+    positive / negative split, and two example questions. Answers "what
+    topics come up most for Rootganic?", "what do people complain about
+    in the Swell Score research?". Topic names can be passed to
+    get_research_questions(topic=...) or get_research_comments for detail.
+    """
+    p, err = _platform_ok(platform)
+    if err:
+        return err
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cli, err = _research_client(cur, client)
+            if err:
+                return err
+            cur.execute(
+                """WITH t AS (
+                       SELECT lower(x.tag) AS topic, a.is_question, a.question_text, a.sentiment, rc.score
+                         FROM research_comment_analysis a
+                         JOIN research_comments rc ON rc.id = a.comment_id,
+                              jsonb_array_elements_text(a.topics) x(tag)
+                        WHERE a.client_id = %(c)s AND (%(p)s = '' OR rc.platform = %(p)s))
+                   SELECT topic, count(*) AS comments,
+                          count(*) FILTER (WHERE is_question) AS questions,
+                          count(*) FILTER (WHERE sentiment = 'positive') AS positive,
+                          count(*) FILTER (WHERE sentiment = 'negative') AS negative,
+                          (array_agg(question_text ORDER BY score DESC NULLS LAST)
+                             FILTER (WHERE is_question AND question_text IS NOT NULL))[1:2] AS example_questions
+                     FROM t GROUP BY topic ORDER BY comments DESC LIMIT %(l)s""",
+                {"c": cli["id"], "p": p, "l": max(1, min(int(limit), 100))})
+            rows = cur.fetchall()
+            coverage = _coverage(cur, cli["id"])
+    return {"client": cli["name"], "slug": cli["slug"], "platform": p or None,
+            "topics": rows, "coverage": coverage}
+
+
+@mcp.tool()
+def get_research_comments(client: Any, search: str = "", sentiment: str = "",
+                          about: str = "", topic: str = "", platform: str = "",
+                          limit: int = 15) -> dict:
+    """
+    The most-upvoted actual comments from the client's Reddit / YouTube
+    research, filtered to what was asked. Answers "what are people saying
+    about Midi Health in Winona's research?" (about='Midi'), "show
+    negative comments about price for Rootganic" (sentiment='negative',
+    topic='price'), "comments mentioning 'warranty'" (search='warranty').
+    search - keyword(s) in the comment text.
+    sentiment - positive | negative | neutral | mixed.
+    about - a brand / product the comment is about (the client or a
+      competitor; partial, case-insensitive).
+    topic - a topic tag (see get_research_topics).
+    platform - 'reddit', 'youtube' or empty.
+    Comment text is cut to 600 characters. Sentiment / about / topic
+    filters only see analyzed comments (see coverage).
+    """
+    p, err = _platform_ok(platform)
+    if err:
+        return err
+    sent = (sentiment or "").strip().lower()
+    if sent not in ("", "positive", "negative", "neutral", "mixed"):
+        return {"error": "sentiment must be positive, negative, neutral, mixed or empty"}
+    needs_analysis = bool(sent or (about or "").strip() or (topic or "").strip())
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cli, err = _research_client(cur, client)
+            if err:
+                return err
+            cur.execute(
+                f"""SELECT left(rc.body, 600) AS comment, rc.score, rc.platform, rc.posted_at,
+                           a.sentiment, a.sentiment_target AS about, a.topics,
+                           rs.title AS source_title, rs.url AS source_url, rs.container AS subreddit
+                      FROM research_comments rc
+                      {'JOIN' if needs_analysis else 'LEFT JOIN'} research_comment_analysis a ON a.comment_id = rc.id
+                      JOIN research_sources rs ON rs.id = rc.source_id
+                     WHERE rc.client_id = %(c)s
+                       AND (%(p)s = '' OR rc.platform = %(p)s)
+                       AND (%(s)s = '' OR rc.body ILIKE '%%' || %(s)s || '%%')
+                       AND (%(se)s = '' OR a.sentiment = %(se)s)
+                       AND (%(ab)s = '' OR a.sentiment_target ILIKE '%%' || %(ab)s || '%%')
+                       AND (%(t)s = '' OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.topics) x(tag)
+                                                   WHERE lower(x.tag) = lower(%(t)s)))
+                       AND length(rc.body) >= 15
+                     ORDER BY rc.score DESC NULLS LAST
+                     LIMIT %(l)s""",
+                {"c": cli["id"], "p": p, "s": (search or "").strip(), "se": sent,
+                 "ab": (about or "").strip(), "t": (topic or "").strip(),
+                 "l": max(1, min(int(limit), 50))})
+            rows = cur.fetchall()
+            coverage = _coverage(cur, cli["id"])
+    for r in rows:
+        r["posted_at"] = _iso(r["posted_at"])
+    return {"client": cli["name"], "slug": cli["slug"],
+            "filters": {k: v for k, v in {"search": search, "sentiment": sent, "about": about,
+                                          "topic": topic, "platform": p}.items() if v} or None,
+            "comments": rows, "coverage": coverage}
+
+
+@mcp.tool()
+def get_research_sources(client: Any, platform: str = "", community: str = "",
+                         search: str = "", limit: int = 15) -> dict:
+    """
+    The Reddit threads and YouTube videos behind the client's audience
+    research, most-discussed first (by number of comments collected).
+    Answers "which Reddit threads were researched for Winona?", "top
+    YouTube videos in Outdoor Vitals' research", "threads from
+    r/Ultralight". platform - 'reddit' | 'youtube' | empty;
+    community - a subreddit name (partial); search - keyword in the title.
+    """
+    p, err = _platform_ok(platform)
+    if err:
+        return err
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cli, err = _research_client(cur, client)
+            if err:
+                return err
+            cur.execute(
+                """SELECT rs.platform, rs.title, rs.url, rs.container AS subreddit, rs.published_at,
+                          count(rc.id) AS comments_collected, max(rc.score) AS top_comment_score
+                     FROM research_sources rs
+                     LEFT JOIN research_comments rc ON rc.source_id = rs.id
+                    WHERE rs.client_id = %(c)s
+                      AND (%(p)s = '' OR rs.platform = %(p)s)
+                      AND (%(cm)s = '' OR rs.container ILIKE '%%' || %(cm)s || '%%')
+                      AND (%(s)s = '' OR rs.title ILIKE '%%' || %(s)s || '%%')
+                    GROUP BY rs.id
+                    ORDER BY comments_collected DESC LIMIT %(l)s""",
+                {"c": cli["id"], "p": p, "cm": re.sub(r"^/?r/", "", (community or "").strip(), flags=re.I).strip("/"),
+                 "s": (search or "").strip(), "l": max(1, min(int(limit), 50))})
+            rows = cur.fetchall()
+    for r in rows:
+        r["published_at"] = _iso(r["published_at"])
+    return {"client": cli["name"], "slug": cli["slug"],
+            "filters": {k: v for k, v in {"platform": p, "community": community,
+                                          "search": search}.items() if v} or None,
+            "sources": rows}
 
 
 if __name__ == "__main__":
