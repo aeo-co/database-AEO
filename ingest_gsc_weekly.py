@@ -22,13 +22,14 @@ gsc_web 'total' rows. Everything else goes into metrics:
 
     metrics.web       - gsc_web non-total dimensions (branded_queries,
                         nonbranded_queries, export counts, ...)
-    metrics.<section> - one key per other gsc_* source (country, device,
-                        page, query_branded, query_nonbranded,
-                        search_appearance, ai_features, ai_features_page, ...)
-                        each {"rows": {dimension: {metric: value}},
-                              "caveats": [...]}
-    metrics.internal_only - branded_concern_queries + query_concern.
+    metrics.ai_features - AI Overviews / AI Mode impression totals
+    metrics.internal_only - branded_concern_queries totals.
                         INTERNAL ONLY - never client-facing without Julian.
+
+Every other gsc_* source (country, device, page, query_branded,
+query_nonbranded, query_concern, search_appearance, ai_features_country /
+_device / _page) goes to gsc_breakdowns, one row per item. query_concern
+rows are internal_only = true.
 
 Periods where GSC access is still pending (gsc_web has only a
 'status: pending' row) are skipped. Re-running updates in place.
@@ -50,6 +51,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Pull-folder names that differ from the client slug (same as ingest_ga4_weekly).
 ALIAS = {"kj-trading": "kj-trading-systems", "living-well": "living-well-with-dr-michelle"}
 
+# Sections that stay in gsc_weekly.metrics as part of the period summary;
+# every other gsc_* section goes to gsc_breakdowns.
+SUMMARY_SECTIONS = {"ai_features"}
+
 # Dimensions / sections that must never reach a client-facing report.
 INTERNAL_WEB_DIMS = {"branded_concern_queries"}
 INTERNAL_SECTIONS = {"query_concern"}
@@ -63,6 +68,20 @@ def _num(v):
         return int(f) if f == int(f) else f
     except ValueError:
         return v
+
+
+def _int(v):
+    try:
+        return None if v in (None, "") else int(round(float(v)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _dec(v):
+    try:
+        return None if v in (None, "") else float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _flat(s: str) -> str:
@@ -108,12 +127,15 @@ def build_periods(rows):
 def _to_metrics(p, ws, we, label):
     web = {k: v for k, v in p["web"].items() if k not in INTERNAL_WEB_DIMS}
     internal = {k: v for k, v in p["web"].items() if k in INTERNAL_WEB_DIMS}
-    sections, internal_sections = {}, {}
+    # Breakdowns (country, page, queries, ...) live in gsc_breakdowns; only
+    # the AI-features totals stay here as part of the period summary.
+    sections = {}
     for name, s in p["sections"].items():
-        out = {"rows": s["rows"], "caveats": sorted(s["caveats"])}
-        if "window" in s:
-            out["window"] = s["window"]
-        (internal_sections if name in INTERNAL_SECTIONS else sections)[name] = out
+        if name in SUMMARY_SECTIONS:
+            out = {"rows": s["rows"], "caveats": sorted(s["caveats"])}
+            if "window" in s:
+                out["window"] = s["window"]
+            sections[name] = out
     totals_extra = {k: v for k, v in p["total"].items()
                     if k not in ("clicks", "impressions", "ctr_pct", "avg_position")}
     metrics = {
@@ -124,13 +146,38 @@ def _to_metrics(p, ws, we, label):
         "web": web or None,
         **sections,
     }
-    if internal or internal_sections:
+    if internal:
         metrics["internal_only"] = {
             "note": "INTERNAL ONLY - never client-facing without Julian",
-            "web": internal or None,
-            **internal_sections,
+            "web": internal,
         }
     return metrics
+
+
+def _write_breakdowns(cur, client_id, ws, we, p):
+    """Replace this period's rows in gsc_breakdowns with what the pull has."""
+    cur.execute("DELETE FROM gsc_breakdowns WHERE client_id=%s AND week_start=%s AND week_end=%s",
+                (client_id, ws, we))
+    batch = []
+    for kind, s in p["sections"].items():
+        if kind in SUMMARY_SECTIONS:
+            continue
+        note = "; ".join(sorted(s["caveats"]))
+        if "window" in s:
+            note = (f"covers {s['window'][0]}..{s['window'][1]} only; " + note).strip("; ")
+        for item, m in s["rows"].items():
+            if not item or item in ("total", "pending"):
+                continue
+            batch.append((client_id, ws, we, kind, str(item), _int(m.get("clicks")),
+                          _int(m.get("impressions")), _dec(m.get("ctr_pct")),
+                          _dec(m.get("avg_position")), kind in INTERNAL_SECTIONS, note or None))
+    if batch:
+        # executemany pipelines the inserts - one round trip, not one per row.
+        cur.executemany(
+            """INSERT INTO gsc_breakdowns (client_id, week_start, week_end, kind, item,
+                   clicks, impressions, ctr_pct, avg_position, internal_only, note)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", batch)
+    return len(batch)
 
 
 def _fold_partial_windows(periods):
@@ -174,6 +221,7 @@ def write_periods(cur, client_id, periods, label):
              t.get("ctr_pct"), t.get("avg_position"),
              json.dumps(_to_metrics(p, ws, we, label))),
         )
+        _write_breakdowns(cur, client_id, ws, we, p)
         n += 1
     return n, skipped
 
@@ -214,13 +262,17 @@ def ingest_csv(cur, cmap, path):
     return f"ok {os.path.basename(path)}: {n} period(s)" + (f", {skipped} pending/empty skipped" if skipped else "")
 
 
-def ingest_from_db(cur):
-    """Backfill from gsc_* sections already in shopify_report_sections."""
+def ingest_from_db(cur, client_id=None, report_period=None):
+    """Backfill from gsc_* sections already in shopify_report_sections,
+    optionally only one client / one report_period."""
     cur.execute(
         """SELECT client_id, report_period, section_name, rows
              FROM shopify_report_sections
             WHERE section_name ~ ' gsc_'
-            ORDER BY client_id, report_period""")
+              AND (%(cid)s::int IS NULL OR client_id = %(cid)s)
+              AND (%(rp)s::text IS NULL OR report_period = %(rp)s)
+            ORDER BY client_id, report_period""",
+        {"cid": client_id, "rp": report_period})
     grouped = {}
     for r in cur.fetchall():
         source = r["section_name"].split(" ", 1)[1]

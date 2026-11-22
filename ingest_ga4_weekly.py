@@ -180,31 +180,42 @@ def ingest_file(path, slug_map):
     return (path, None, n)
 
 
-def ingest_from_db():
-    """Rebuild from ga4* + meta sections in shopify_report_sections, one
-    group per (client, report_period) - i.e. one group per pull CSV."""
+def refresh_from_sections(c, client_id=None, report_period=None, verbose=False):
+    """Rebuild ga4_weekly from ga4* + meta sections in shopify_report_sections,
+    one group per (client, report_period) - i.e. one group per pull CSV.
+    Optionally only one client / one report_period. Uses the caller's cursor
+    (no commit), so it can run inside another ingest's transaction."""
+    c.execute("""SELECT client_id, report_period, section_name, rows
+                   FROM shopify_report_sections
+                  WHERE report_period IS NOT NULL
+                    AND (section_name ~ ' ga4' OR section_name ~ ' meta$')
+                    AND (%(cid)s::int IS NULL OR client_id = %(cid)s)
+                    AND (%(rp)s::text IS NULL OR report_period = %(rp)s)""",
+              {"cid": client_id, "rp": report_period})
+    groups = {}
+    for r in c.fetchall():
+        src = r["section_name"].split(" ", 1)[1]
+        for row in r["rows"]:
+            metric, dim, val, ws, we, caveat = (list(row) + [""] * 6)[:6]
+            groups.setdefault((r["client_id"], r["report_period"]), []).append(
+                (src, metric, dim, val, ws, we, caveat))
     total = 0
+    for (cid, period), rows in sorted(groups.items()):
+        periods, meta = build_periods(rows)
+        if not periods:
+            continue
+        n, removed = write_periods(c, cid, periods, meta)
+        total += n
+        if verbose:
+            print(f"ok client {cid} {period}: {n} period(s)"
+                  + (f", removed {removed} pending/empty" if removed else ""))
+    return total
+
+
+def ingest_from_db():
     with db.get_conn() as conn:
         with conn.cursor() as c:
-            c.execute("""SELECT client_id, report_period, section_name, rows
-                           FROM shopify_report_sections
-                          WHERE report_period IS NOT NULL
-                            AND (section_name ~ ' ga4' OR section_name ~ ' meta$')""")
-            groups = {}
-            for r in c.fetchall():
-                src = r["section_name"].split(" ", 1)[1]
-                for row in r["rows"]:
-                    metric, dim, val, ws, we, caveat = (list(row) + [""] * 6)[:6]
-                    groups.setdefault((r["client_id"], r["report_period"]), []).append(
-                        (src, metric, dim, val, ws, we, caveat))
-            for (cid, period), rows in sorted(groups.items()):
-                periods, meta = build_periods(rows)
-                if not periods:
-                    continue
-                n, removed = write_periods(c, cid, periods, meta)
-                total += n
-                print(f"ok client {cid} {period}: {n} period(s)"
-                      + (f", removed {removed} pending/empty" if removed else ""))
+            total = refresh_from_sections(c, verbose=True)
     print("TOTAL rows written:", total)
 
 

@@ -62,16 +62,16 @@ code is in git history before that date.
 | `client_aliases` | Alternate names that route to an existing client | by hand |
 | `removed_clients` | Clients that must never be re-registered | by hand (see "Removing a client") |
 | `ai_visibility_checks` | One row per client / platform / date / query: score, position, mentions, sources, raw output, `top_brand_attributes` | `ingest_ai_visibility.py`, upload box, n8n |
-| `shopify_report_sections` | Sections of `{client}-all-data.csv` reports, stored as-is (columns vary per client); `report_period` NULL = monthly | `ingest_shopify_reports.py`, upload box |
+| `shopify_report_sections` | Raw sections of uploaded report / pull files, stored as-is (columns vary). Pull files carry `<period> ga4*`, `<period> gsc_*`, `<period> shopify*`, `meta` and `ai_snapshot` sections; GA4 and GSC are also loaded into their own tables (below) automatically on upload | `ingest_shopify_reports.py`, upload box, MCP `ingest_shopify_file` |
 | `shopify_weekly` | Shopify AI-channel sales (ChatGPT agentic sales etc.) | `ingest_shopify_ai.py` |
 | `ga4_weekly` | GA4 sessions, key events, revenue, AI-referral / direct / YouTube breakdowns per period (weekly or monthly, keyed on the full window). `metrics.invalid` marks known-bad tracking, `metrics.not_reported` lists withheld metrics, `metrics.caveats` keeps the source notes. Clients without GA4 access have no rows | `ingest_ga4_weekly.py` |
-| `gsc_weekly` | Search Console clicks / impressions / CTR / position per period (weekly or monthly, keyed on the full window); breakdowns (branded vs non-branded, country, device, page, queries, AI features) in `metrics`. `metrics.internal_only` holds concern queries - never client-facing | `ingest_gsc_weekly.py` |
+| `gsc_weekly` | Search Console totals per period (weekly or monthly, keyed on the full window): clicks / impressions / CTR / position, plus branded vs non-branded split and AI-features impressions in `metrics`. `metrics.internal_only` holds concern-query totals - never client-facing | `ingest_gsc_weekly.py` |
+| `gsc_breakdowns` | One row per item of a GSC breakdown per period: `kind` = page, query_branded, query_nonbranded, country, device, search_appearance, ai_features_page / _country / _device, query_concern. `internal_only` = true for query_concern | `ingest_gsc_weekly.py` |
 | `research_sources` / `research_comments` | YouTube videos / Reddit threads and their comments | `ingest_reddit_csv.py`, `ingest_youtube_csv.py`, upload box, n8n |
 | `research_comment_analysis` | LLM-extracted questions, sentiment, topic tags per comment | `analyze_comments.py` |
 | `client_contexts` | Whole brand-context markdown docs + 384-dim embeddings | `ingest_client_context.py`, MCP `ingest_client_context` |
 | `website_categorisation` | Domain -> category lookup | external load |
 | `v_ai_visibility`, `v_ai_visibility_summary` (views) | Readable per-query rows / per-platform rollup for ad-hoc SQL; no app code uses them | `schema.sql` |
-| `aeo_content_log` | In the schema, **no loader yet - empty** | - |
 
 Every client foreign key is `ON DELETE CASCADE`. Re-running any loader
 on the same file updates rows rather than duplicating them.
@@ -97,6 +97,13 @@ python ingest_client_context.py doc.md --client <slug|name|id> --type brand_voic
   client. A squashed filename (`outdoorvitals`) gives a squashed name -
   fix by hand: `UPDATE clients SET name = 'OutdoorVitals' WHERE slug = 'outdoorvitals';`
 - Unknown AI platforms get an auto-generated name instead of failing.
+- When a pull file with GA4 / GSC sections is uploaded (dashboard, MCP
+  `ingest_shopify_file`, or `ingest_shopify_reports.py`), `ga4_weekly`,
+  `gsc_weekly` and `gsc_breakdowns` are refreshed for that client and
+  period in the same transaction. If that refresh fails, the raw sections
+  are still saved and the result carries `typed_refresh_error`. Data
+  written to `shopify_report_sections` any other way needs the
+  `--from-db` runs above.
 - Files whose columns don't match are skipped with a message naming
   what's missing.
 
@@ -146,8 +153,10 @@ python mcp_server.py --stdio   # for Claude Desktop (or MCP_TRANSPORT=stdio)
 On the droplet it runs as `aeo-mcp.service`. Most tools that take a
 `client` accept an id, slug or name fragment.
 
-**Clients & profiles:** `list_clients`, `get_client_profile` (everything
-about one client in one call).
+**Clients & profiles:** `list_clients`, `get_client_profile` (compact
+overview: AI visibility per platform, top competitors, latest GA4 / GSC
+totals, Shopify report periods, list of brand docs - no raw sections or
+doc text; Echo follows up with one focused tool).
 
 **AI visibility:** `get_ai_visibility_summary`, `get_ai_visibility_queries`,
 `get_top_mentions`, `get_weekly_ai_visibility_report`,
@@ -155,11 +164,15 @@ about one client in one call).
 (all clients, latest week - the Slack batch report).
 
 **Shopify & GA4:** `get_shopify_report`, `get_weekly_shopify_report`,
-`get_monthly_shopify_report`, `get_ga4_summary`.
+`get_monthly_shopify_report` (Shopify sections only - GA4 / GSC / meta
+sections are excluded), `get_ga4_summary`.
 
-**Search Console:** `get_gsc_summary` (clicks, impressions, CTR, position,
-branded vs non-branded, AI-features impressions per period; optional
-breakdowns; concern queries only with `include_internal=True`).
+**Search Console:** `get_gsc_summary` (totals per period: clicks,
+impressions, CTR, position, branded vs non-branded, AI-features
+impressions) and `get_gsc_breakdown(client, kind, period, period_kind)`
+(one slice: top pages, branded / non-branded queries, countries,
+devices, search appearance, AI-Overview pages). Concern queries only
+with `include_internal=True`.
 
 **Brand context:** `get_client_context`, `ingest_client_context`.
 
@@ -180,20 +193,23 @@ python client_report.py "outdoor vitals"   # name match, spacing ignored
 Loaders auto-register any client name they see, so deleting the row
 alone isn't enough - the next n8n run or upload brings it back:
 
-1. Back up its rows into `<table>_backup_<reason>` tables (below).
+1. Back up its rows into `archive.<table>_backup_<reason>` tables (below).
 2. `DELETE FROM clients WHERE id = ...` - cascades to all its data.
 3. Add its flattened name (e.g. `livingwellwithdrmichelle`) to
    `removed_clients`. Every ingest path then refuses it (n8n gets a 400,
    files are skipped with a reason). Delete that row to allow it back.
 
-## Backup tables (`*_backup_*`)
+## Backup tables (`archive.*_backup_*`)
 
-The live DB holds snapshot tables named `<table>_backup_<what happened>`,
+The live DB keeps snapshot tables in the `archive` schema (moved there
+from `public` on 2026-11-19), named `<table>_backup_<what happened>`,
 e.g. `clients_backup_merge89` or
 `ai_visibility_checks_backup_removed_babyrx_livingwell_20261111`. Each is
 a copy taken right before a merge (`merge<id>`), removal
 (`removed_<client or id>`) or delete (`del<id>`), so it can be undone -
 don't drop them. No code reads them and they're not in `schema.sql`.
+Create new ones there too, e.g.
+`CREATE TABLE archive.clients_backup_removed_123 AS SELECT * FROM clients WHERE id = 123;`
 Older ones still have the pre-rename `competitor_analysis` column.
 
 ## Known gaps
@@ -203,5 +219,4 @@ Older ones still have the pre-rename `competitor_analysis` column.
   or add auth before exposing them.
 - **No live API pulls** from GA4 / GSC / Shopify - data arrives as
   exported files or via n8n.
-- **The AEO content log** has a table but no loader.
 - **No dashboard panel reads `gsc_weekly` yet** (the MCP tool does).

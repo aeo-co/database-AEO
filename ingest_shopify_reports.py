@@ -123,6 +123,7 @@ def ingest_file(path: Path) -> dict:
                         "source_file": path.name,
                     },
                 )
+            typed = _refresh_typed_tables(conn, cur, client_id, report_period, sections)
 
     return {
         "filename": path.name,
@@ -132,7 +133,33 @@ def ingest_file(path: Path) -> dict:
         "report_type": "weekly" if report_period else "monthly",
         "report_period": report_period,
         "sections": len(sections),
+        **typed,
     }
+
+
+def _refresh_typed_tables(conn, cur, client_id, report_period, sections) -> dict:
+    """
+    Pull files carry GA4 / GSC sections ('2026-10 ga4', '2026-W42 gsc_web',
+    ...). Right after they are stored, rebuild ga4_weekly / gsc_weekly /
+    gsc_breakdowns for this client + period, so agents reading the typed
+    tables never lag behind the raw sections. Runs in a savepoint: if it
+    fails, the raw sections are still saved and the reason is returned.
+    """
+    if not report_period:
+        return {}
+    names = " ".join(sections)
+    out = {}
+    try:
+        with conn.transaction():
+            if "ga4" in names:
+                from ingest_ga4_weekly import refresh_from_sections as ga4_refresh
+                out["ga4_periods"] = ga4_refresh(cur, client_id, report_period)
+            if "gsc_" in names:
+                from ingest_gsc_weekly import ingest_from_db as gsc_refresh
+                out["gsc_periods"] = gsc_refresh(cur, client_id, report_period)[1]
+    except Exception as e:  # keep the raw sections even if the typed refresh fails
+        out["typed_refresh_error"] = f"{type(e).__name__}: {e}"
+    return out
 
 
 def main(inputs: list[str]):
