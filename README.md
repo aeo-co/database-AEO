@@ -174,6 +174,17 @@ impressions) and `get_gsc_breakdown(client, kind, period, period_kind)`
 devices, search appearance, AI-Overview pages). Concern queries only
 with `include_internal=True`.
 
+**Audience research (Reddit / YouTube):** `get_research_overview`
+(sources, subreddits, sentiment, most-discussed brands, top topics,
+analysis coverage), `get_research_questions` (real audience questions;
+filter by keyword / topic / platform), `get_research_topics` (topics with
+sentiment split and example questions), `get_research_comments` (top
+comments; filter by keyword / sentiment / brand / topic),
+`get_research_sources` (threads and videos; filter by platform /
+subreddit / title). Plain SQL - no embedding model, safe on the droplet.
+Questions, topics and sentiment only cover analyzed comments; each
+response reports coverage.
+
 **Brand context:** `get_client_context`, `ingest_client_context`.
 
 **Ingest:** `ingest_file` (AI visibility .xlsx), `ingest_shopify_file`.
