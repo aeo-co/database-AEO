@@ -1,11 +1,6 @@
 {
- "generated_at": "2026-11-11 (BabyRx/Living Well removed again; Pinder slug is pinderplotkin)",
+ "generated_at": "2026-11-22 (Abogado Attorney and PinderPlotkin removed - no longer clients)",
  "clients": [
-  {
-   "id": 76,
-   "name": "Abogado Attorney",
-   "slug": "abogado-attorney"
-  },
   {
    "id": 124,
    "name": "AEO.co",
@@ -55,11 +50,6 @@
    "id": 69,
    "name": "Outdoor Vitals",
    "slug": "outdoor-vitals"
-  },
-  {
-   "id": 159,
-   "name": "PinderPlotkin",
-   "slug": "pinderplotkin"
   },
   {
    "id": 70,

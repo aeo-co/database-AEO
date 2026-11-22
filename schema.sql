@@ -41,7 +41,11 @@ CREATE TABLE IF NOT EXISTS removed_clients (
 INSERT INTO removed_clients (name_key, name, note) VALUES
     ('babyrx', 'BabyRx', 'removed 2026-10-13, re-added by n8n by mistake'),
     ('livingwellwithdrmichelle', 'Living Well with Dr. Michelle', 'removed 2026-10-13, re-added by n8n by mistake'),
-    ('livingwell', 'Living Well with Dr. Michelle', 'short-name variant')
+    ('livingwell', 'Living Well with Dr. Michelle', 'short-name variant'),
+    ('abogadoattorney', 'Abogado Attorney', 'removed 2026-11-22 - no longer a client'),
+    ('pinderplotkin', 'PinderPlotkin', 'removed 2026-11-22 - no longer a client'),
+    ('pinderplotkinllc', 'PinderPlotkin', 'removed 2026-11-22 - alias'),
+    ('pinderplotkinllcs', 'PinderPlotkin', 'removed 2026-11-22 - alias')
 ON CONFLICT (name_key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS ga4_weekly (
